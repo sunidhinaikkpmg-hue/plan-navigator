@@ -20,6 +20,45 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-action-button {
+  border: 1px solid #e5e7eb;
+  background: transparent;
+  color: #374151;
+  padding: 8px 14px;
+  border-radius: 9999px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.header-action-button:hover {
+  background: #f3f4f6;
+}
+
+.header-role-badge {
+  padding: 8px 14px;
+  border-radius: 9999px;
+  font-size: 0.87rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.header-role-badge.admin {
+  background: #111827;
+  color: #f9fafb;
+}
+
+.header-role-badge.user {
+  background: #e5e7eb;
+  color: #111827;
+}
+
 .header-spacer {
   flex: 1;
 }
@@ -297,6 +336,66 @@
 .login-hint strong {
   display: block;
   margin-bottom: 10px;
+}
+
+.saved-accounts {
+  margin-bottom: 24px;
+}
+
+.saved-accounts-label {
+  margin: 0 0 10px 0;
+  font-size: 0.9rem;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.saved-accounts-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.quick-switch-btn {
+  padding: 10px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  background: #f9fafb;
+  color: #374151;
+  font-weight: 500;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-switch-btn:hover {
+  background: #ef4444;
+  color: white;
+  border-color: #ef4444;
+}
+
+.login-toggle {
+  margin-top: 16px;
+}
+
+.toggle-button {
+  border: none;
+  background: transparent;
+  color: #ef4444;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+  padding: 12px 18px;
+  border-radius: 14px;
+  background: #fee2e2;
+  transition: background 0.2s ease;
+}
+
+.toggle-button:hover {
+  background: #fecaca;
 }
 
 .ph-shell {

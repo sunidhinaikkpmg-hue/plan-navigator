@@ -1,9 +1,22 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 
 const DEMO_EMAIL = "test@plannavigator.app";
 const DEMO_PASSWORD = "Test1234!";
+
+function getSavedAccounts(): string[] {
+  const saved = localStorage.getItem("saved_accounts");
+  return saved ? JSON.parse(saved) : [];
+}
+
+function addSavedAccount(email: string) {
+  const accounts = getSavedAccounts();
+  if (!accounts.includes(email)) {
+    accounts.push(email);
+    localStorage.setItem("saved_accounts", JSON.stringify(accounts));
+  }
+}
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -11,21 +24,41 @@ export function LoginPage() {
   const [email, setEmail] = useState(DEMO_EMAIL);
   const [password, setPassword] = useState(DEMO_PASSWORD);
   const [isSignUp, setIsSignUp] = useState(false);
+  const [savedAccounts, setSavedAccounts] = useState<string[]>([]);
+  const hasLoggedInAccounts = state.allUsers.length > 0;
+
+  useEffect(() => {
+    setSavedAccounts(getSavedAccounts());
+  }, []);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    
+
     try {
       if (isSignUp) {
         await signUp(email, password);
       } else {
         await signIn(email, password);
+        addSavedAccount(email);
       }
-      // Navigation will happen automatically when auth state updates
       navigate("/");
-    } catch (error) {
-      console.error("Auth error:", error);
+    } catch (error: unknown) {
+      const message =
+        typeof error === "object" && error !== null && "message" in error
+          ? String((error as { message: string }).message)
+          : "Authentication failed";
+      if (message.toLowerCase().includes("user not found")) {
+        setIsSignUp(true);
+        setPassword("");
+      }
+      console.error("Auth error:", message);
     }
+  };
+
+  const handleQuickSwitch = (savedEmail: string) => {
+    setEmail(savedEmail);
+    setPassword("");
+    setIsSignUp(false);
   };
 
   return (
@@ -35,6 +68,32 @@ export function LoginPage() {
           <h1>Plan Navigator Login</h1>
           <p>{isSignUp ? "Create a new account" : "Sign in to your account"}</p>
         </header>
+
+        {savedAccounts.length > 0 && !isSignUp && (
+          <div className="saved-accounts">
+            <p className="saved-accounts-label">Quick switch:</p>
+            <div className="saved-accounts-buttons">
+              {savedAccounts.map((account) => (
+                <button
+                  key={account}
+                  type="button"
+                  className="quick-switch-btn"
+                  onClick={() => handleQuickSwitch(account)}
+                  title={`Switch to ${account}`}
+                >
+                  {account}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {hasLoggedInAccounts && (
+          <div className="login-info">
+            You are already signed in with {state.allUsers.length} account{state.allUsers.length > 1 ? "s" : ""}.
+            Signing in here will keep existing sessions so you can switch between accounts.
+          </div>
+        )}
 
         <form onSubmit={handleSubmit}>
           <label>
@@ -81,8 +140,8 @@ export function LoginPage() {
 
         <div className="login-hint">
           <strong>Demo credentials</strong>
-          <p>Email: {DEMO_EMAIL}</p>
-          <p>Password: {DEMO_PASSWORD}</p>
+          <p style={{ color: "#9ca3af" }}>Email: {DEMO_EMAIL}</p>
+          <p style={{ color: "#9ca3af" }}>Password: {DEMO_PASSWORD}</p>
           <p>
             Use these credentials to test the application. Passwords are securely hashed using Passlib (bcrypt) and stored locally.
           </p>

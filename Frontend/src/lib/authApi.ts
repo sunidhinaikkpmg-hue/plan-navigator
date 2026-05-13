@@ -55,6 +55,14 @@ export async function logout(token: string): Promise<void> {
   });
 }
 
+export async function getRegisteredUsers(): Promise<{ users: Array<{ email: string; created_at: string }>; count: number }> {
+  const response = await fetch(`${API_BASE_URL}/auth/users`);
+  if (!response.ok) {
+    throw new Error("Failed to fetch users list");
+  }
+  return response.json();
+}
+
 export function getStoredToken(): string | null {
   return localStorage.getItem("auth_token");
 }

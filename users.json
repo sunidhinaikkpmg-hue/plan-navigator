@@ -1,0 +1,24 @@
+{
+  "users": [
+    {
+      "email": "test@plannavigator.app",
+      "hashed_password": "$pbkdf2-sha256$29000$611rjfHeOwdAaM1ZC6EUog$AznsLmKwrWi0IdHuFicvyCZZdlC.9zpxKrj3yYUxlyU",
+      "created_at": "2026-05-13T19:42:32.380651"
+    },
+    {
+      "email": "test2@plannavigator.app",
+      "hashed_password": "$pbkdf2-sha256$29000$JsTYu/f.PyekVEqpNYawVg$KUOUnZUKVOKJqfnkhsJAzNcwSm/ig6KFRJEcRfSPPZg",
+      "created_at": "2026-05-13T19:45:40.844324"
+    },
+    {
+      "email": "sunidhi3@plannavigator.app",
+      "hashed_password": "$pbkdf2-sha256$29000$n3OuVYoxRmjtfW.NUeq9Vw$2XLZkSO5HgXj9kn6aWFOkL8WGHRVvHUGGXs4HA2ZP7Q",
+      "created_at": "2026-05-13T19:46:17.243715"
+    },
+    {
+      "email": "sunidhi@normal.com",
+      "hashed_password": "$pbkdf2-sha256$29000$J8S4N6a0llIKwThH6F1rrQ$EFptqxRZmssxkfn57MeuhrZ287FXAOiYhI8oAinoqYU",
+      "created_at": "2026-05-13T19:51:25.111570"
+    }
+  ]
+}

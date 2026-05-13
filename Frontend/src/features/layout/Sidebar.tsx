@@ -1,4 +1,6 @@
 import { NavLink } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
+import { isAdminEmail } from "../../lib/user";
 
 const links = [
   { to: "/", label: "Dashboard" },
@@ -15,6 +17,16 @@ const links = [
 ];
 
 export function Sidebar() {
+  const { state } = useAuth();
+  const isAdmin = isAdminEmail(state.user?.email);
+
+  const visibleLinks = links.filter((link) => {
+    if (!isAdmin && ["/usage", "/data-schema"].includes(link.to)) {
+      return false;
+    }
+    return true;
+  });
+
   return (
     <aside className="sidebar-shell">
       <div className="sidebar-brand">
@@ -26,7 +38,7 @@ export function Sidebar() {
       </div>
 
       <nav className="sidebar-nav">
-        {links.map((link) => (
+        {visibleLinks.map((link) => (
           <NavLink
             key={link.to}
             to={link.to}

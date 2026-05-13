@@ -19,6 +19,7 @@ from .auth import (
     authenticate_user,
     create_access_token,
     verify_token,
+    load_users,
     ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from .api.data import router as data_router
@@ -128,6 +129,21 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def log_cors_origins():
+    """Log allowed CORS origins on startup for debugging"""
+    origins = get_allowed_origins()
+    print("\n" + "=" * 60)
+    print("CORS Configuration:")
+    if origins == ["*"]:
+        print("  ALLOWED_ORIGINS: * (All origins allowed)")
+    else:
+        print("  ALLOWED_ORIGINS:")
+        for origin in origins:
+            print(f"    - {origin}")
+    print("=" * 60 + "\n")
+
+
 async def get_current_user(authorization: str = None) -> str:
     """Dependency to get current user from JWT token"""
     if not authorization:
@@ -203,6 +219,14 @@ async def logout():
     return {"message": "Logged out successfully"}
 
 
+@app.get("/api/auth/users")
+async def list_users():
+    """Get list of all registered users (for debugging/testing)"""
+    users_data = load_users()
+    user_list = [{"email": user["email"], "created_at": user.get("created_at")} for user in users_data.get("users", [])]
+    return {"users": user_list, "count": len(user_list)}
+
+
 @app.get("/health")
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -256,9 +280,10 @@ async def explain_test(request: ExplainRequest):
 @app.post("/api/forecast-test", response_model=None)
 async def forecast_test(request: ForecastRequest):
     test = request.test
+    peer_line = f"Peer percentile {test['peerBenchmark']['percentile']}. " if test.get("peerBenchmark") else ""
     user_prompt = (
         f"Test \"{test['name']}\" ({test['category']}). Current {test['currentValue']}, benchmark {test['benchmark']}, status {test['status']}. "
-        f"{'Peer percentile ' + str(test['peerBenchmark']['percentile']) + '. ' if test.get('peerBenchmark') else ''}\n\n"
+        f"{peer_line}\n\n"
         "Project a plausible 12-month trajectory if no action is taken. Return 6 monthly data points (current + 5 forward) plus a one-sentence narrative."
     )
 
