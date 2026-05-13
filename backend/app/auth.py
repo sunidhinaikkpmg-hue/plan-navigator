@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sys
 
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
