@@ -1,0 +1,33 @@
+2026-05-13 15:55:32.022 [warning] Dir "/home/sunidhinaik_kpmg/.pixi/envs" is not watchable (directory does not exist)
+2026-05-13 15:55:32.650 [info] Starting Environment refresh
+2026-05-13 15:55:32.650 [info] Searching for interpreters in posix paths locator
+2026-05-13 15:55:32.663 [info] Searching for pyenv environments
+2026-05-13 15:55:32.663 [info] Searching for conda environments
+2026-05-13 15:55:32.664 [info] Searching for global virtual environments
+2026-05-13 15:55:32.664 [info] Searching for custom virtual environments
+2026-05-13 15:55:32.672 [info] Skipping ActivatedEnv Detection:  process.env.VSCODE_CLI !== '1'
+2026-05-13 15:55:32.673 [info] Skipping ActivatedEnv Detection:  process.env.VSCODE_CLI !== '1'
+2026-05-13 15:55:32.677 [info] pyenv is not installed
+2026-05-13 15:55:32.677 [info] Finished searching for pyenv environments: 25 milliseconds
+2026-05-13 15:55:32.678 [info] Finished searching for custom virtual envs: 24 milliseconds
+2026-05-13 15:55:32.691 [info] > conda info --json
+2026-05-13 15:55:32.704 [info] > hatch env show --json
+2026-05-13 15:55:32.704 [info] cwd: .
+2026-05-13 15:55:32.717 [info] > pyenv which python
+2026-05-13 15:55:32.717 [info] cwd: .
+2026-05-13 15:55:32.718 [info] Finished searching for global virtual envs: 65 milliseconds
+2026-05-13 15:55:32.736 [info] Found: /bin/python --> /bin/python3.12
+2026-05-13 15:55:32.738 [info] Found: /bin/python3 --> /bin/python3.12
+2026-05-13 15:55:32.739 [info] Found: /bin/python3.12 --> /bin/python3.12
+2026-05-13 15:55:32.755 [info] Found: /usr/bin/python --> /usr/bin/python3.12
+2026-05-13 15:55:32.755 [info] Found: /usr/bin/python3 --> /usr/bin/python3.12
+2026-05-13 15:55:32.756 [info] Found: /usr/bin/python3.12 --> /usr/bin/python3.12
+2026-05-13 15:55:32.803 [info] Finished searching for interpreters in posix paths locator: 147 milliseconds
+2026-05-13 15:55:32.803 [info] > /bin/python -I /google/devshell/editor/code-oss-for-cloud-shell/extensions/ms-python.python/python_files/get_output_via_markers.py /google/devshell/editor/code-oss-for-cloud-shell/extensions/ms-python.python/python_files/interpreterInfo.py
+2026-05-13 15:55:32.834 [info] > /usr/bin/python -I /google/devshell/editor/code-oss-for-cloud-shell/extensions/ms-python.python/python_files/get_output_via_markers.py /google/devshell/editor/code-oss-for-cloud-shell/extensions/ms-python.python/python_files/interpreterInfo.py
+2026-05-13 15:55:32.834 [info] Environments refresh paths discovered (event): 187 milliseconds
+2026-05-13 15:55:32.834 [info] Environments refresh paths discovered: 187 milliseconds
+2026-05-13 15:55:32.940 [info] Environments refresh finished (event): 293 milliseconds
+2026-05-13 15:55:32.973 [info] Environment refresh took 324 milliseconds
+2026-05-13 15:55:33.067 [info] Python interpreter path: /bin/python
+2026-05-13 15:55:37.762 [info] Starting Jedi language server for sunidhinaik_kpmg.

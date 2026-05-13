@@ -1,0 +1,20 @@
+2026-05-13 15:24:17.562 [info] 
+
+
+
+
+2026-05-13 15:24:17.590 [info] Extension host agent started.
+2026-05-13 15:24:17.658 [info] Started initializing default profile extensions in extensions installation folder. file:///home/sunidhinaik_kpmg/.codeoss/extensions
+2026-05-13 15:24:17.685 [info] Completed initializing default profile extensions in extensions installation folder. file:///home/sunidhinaik_kpmg/.codeoss/extensions
+2026-05-13 15:24:22.706 [info] [127.0.0.1][34336436][ManagementConnection] New connection established.
+2026-05-13 15:24:22.886 [info] [127.0.0.1][133d2195][ExtensionHostConnection] New connection established.
+2026-05-13 15:24:25.750 [info] [127.0.0.1][133d2195][ExtensionHostConnection] <1509> Launched Extension Host Process.
+2026-05-13 15:24:26.648 [info] [127.0.0.1][133d2195][ExtensionHostConnection] <1509> [reconnection-grace-time] Extension host: read VSCODE_RECONNECTION_GRACE_TIME=10800000ms (10800s)
+
+2026-05-13 15:33:57.506 [info] [127.0.0.1][34336436][ManagementConnection] The client has disconnected, will wait for reconnection 3h before disposing...
+2026-05-13 15:34:28.115 [info] [127.0.0.1][34336436][ManagementConnection] Another client has connected, will shorten the wait for reconnection 5m before disposing...
+2026-05-13 15:34:28.116 [info] [127.0.0.1][133d2195][ExtensionHostConnection] The client has reconnected.
+2026-05-13 15:34:38.966 [info] [127.0.0.1][34336436][ManagementConnection] The client has reconnected.
+2026-05-13 16:02:12.751 [warning] [File Watcher (node.js)] Watcher shutdown because watched path got deleted
+2026-05-13 16:05:47.318 [warning] [File Watcher (node.js)] Watcher shutdown because watched path got deleted
+2026-05-13 16:08:15.205 [warning] [File Watcher (node.js)] Watcher shutdown because watched path got deleted
