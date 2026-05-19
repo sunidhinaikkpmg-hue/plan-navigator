@@ -24,3 +24,6 @@ steps:
 
 images:
   - 'europe-west1-docker.pkg.dev/adv-lighthouse-plnv/cloud-run-source-deploy/sunidhinaikkpmg-hue-plan-navigator/plan-navigator-git-latest:$COMMIT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
