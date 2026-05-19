@@ -41,7 +41,7 @@ export function LoginPage() {
         await signIn(email, password);
         addSavedAccount(email);
       }
-      navigate("/");
+      navigate("/plan-checkup");
     } catch (error: unknown) {
       const message =
         typeof error === "object" && error !== null && "message" in error

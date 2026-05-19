@@ -1,4 +1,16 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
+const getApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  const hostname = window.location.hostname;
+  if (hostname.includes("cloudshell.dev")) {
+    // Dynamically map port 5173 (frontend) to 8000 (backend) for Cloud Shell
+    return `https://${hostname.replace("5173", "8000")}/api`;
+  }
+  return "http://127.0.0.1:8000/api";
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 export interface TokenResponse {
   access_token: string;

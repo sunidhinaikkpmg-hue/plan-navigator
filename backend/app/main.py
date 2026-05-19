@@ -6,6 +6,13 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+
+# Load environment variables before any local imports that initialize the database
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+from sqlalchemy.orm import Session
+from .db.db import get_db
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -23,9 +30,7 @@ from .auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from .api.data import router as data_router
-
-dotenv_path = Path(__file__).resolve().parents[1] / ".env"
-load_dotenv(dotenv_path=dotenv_path)
+from .api.rag import router as rag_router
 
 AI_GATEWAY_URL = "https://ai.gateway.lovable.dev/v1/chat/completions"
 AI_MODEL = os.getenv("AI_GATEWAY_MODEL", "google/gemini-3-flash-preview")
@@ -119,11 +124,12 @@ class ChatRequest(BaseModel):
 app = FastAPI(title="Plan Navigator API", version="1.0.0")
 
 app.include_router(data_router, prefix="/api")
+app.include_router(rag_router, prefix="/api/rag")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_origins(),
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -144,7 +150,7 @@ async def log_cors_origins():
     print("=" * 60 + "\n")
 
 
-async def get_current_user(authorization: str = None) -> str:
+async def get_current_user(authorization: str = Header(None)) -> str:
     """Dependency to get current user from JWT token"""
     if not authorization:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authorization header")
@@ -228,7 +234,7 @@ async def list_users():
 
 
 @app.get("/health")
-async def healthcheck() -> dict[str, str]:
+async def healthcheck(db: Session = Depends(get_db)) -> dict[str, str]:
     return {"status": "ok"}
 
 

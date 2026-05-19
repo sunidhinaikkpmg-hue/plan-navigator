@@ -34,14 +34,14 @@ VITE_API_BASE_URL=http://127.0.0.1:8000/api
 An example is available in [\.env.example](.env.example).
 
 ## FastAPI setup
-
+uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 Create a Python environment, install the backend dependencies, and run the API:
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r backend/requirements.txt
-python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+python -m 
 ```
 
 Create `backend/.env` from [backend/.env.example](backend/.env.example) and set:

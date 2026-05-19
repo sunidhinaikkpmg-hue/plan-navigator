@@ -1,15 +1,5 @@
 import { useEffect, useState } from "react";
-
-const API_BASE = "http://127.0.0.1:8000/api";
-
-interface DataSchemaSheet {
-  sheet_name: string;
-  rows: Array<Record<string, unknown>>;
-}
-
-interface DataSchemaResponse {
-  sheets: DataSchemaSheet[];
-}
+import { API_BASE } from "../lib/dataApi";
 
 interface CampaignRow {
   id: string | number;
@@ -45,6 +35,7 @@ export function ParticipantEducation() {
   const [rows, setRows] = useState<CampaignRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,39 +45,16 @@ export function ParticipantEducation() {
       setError(null);
 
       try {
-        const schemaResponse = await fetch(`${API_BASE}/data-schema?offset=0&limit=1000`);
-        if (!schemaResponse.ok) {
-          throw new Error(`Failed to load plans (HTTP ${schemaResponse.status})`);
-        }
-
-        const schema = (await schemaResponse.json()) as DataSchemaResponse;
-        const plansSheet = schema.sheets.find((sheet) => sheet.sheet_name.toLowerCase() === "plans");
-        const planIds = Array.from(
-          new Set(
-            (plansSheet?.rows ?? [])
-              .map((row) => row.plan_id)
-              .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          )
-        );
-
-        if (!cancelled) {
-          setPlanCount(planIds.length);
-        }
-
-        const payloads = await Promise.all(
-          planIds.map(async (planId) => {
-            const response = await fetch(`${API_BASE}/plans/${encodeURIComponent(planId)}/campaigns`);
-            if (!response.ok) {
-              return null;
-            }
-            return (await response.json()) as CampaignResponse;
-          })
-        );
+        const response = await fetch(`${API_BASE}/campaigns`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = (await response.json()) as CampaignResponse;
 
         if (cancelled) return;
 
-        const mergedRows = payloads.flatMap((payload) => payload?.campaigns ?? []);
-        setRows(mergedRows);
+        const campaigns = payload.campaigns ?? [];
+        const uniquePlans = new Set(campaigns.map((c) => c.plan_id).filter(Boolean));
+        setPlanCount(uniquePlans.size);
+        setRows(campaigns);
       } catch (e) {
         if (!cancelled) {
           const message = e instanceof Error ? e.message : "Failed to load campaigns.";
@@ -160,7 +128,7 @@ export function ParticipantEducation() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, i) => (
+              {(showAll ? rows : rows.slice(0, 8)).map((row, i) => (
                 <tr
                   key={`${row.plan_id}-${row.id ?? i}`}
                   style={{
@@ -185,6 +153,25 @@ export function ParticipantEducation() {
             </tbody>
           </table>
         </div>
+      )}
+      {rows.length > 8 && (
+        <button
+          onClick={() => setShowAll((v) => !v)}
+          style={{
+            marginTop: "12px",
+            display: "block",
+            background: "none",
+            border: "1px solid #e2e8f0",
+            borderRadius: "8px",
+            padding: "8px 20px",
+            fontSize: "0.875rem",
+            color: "#475569",
+            cursor: "pointer",
+            width: "100%",
+          }}
+        >
+          {showAll ? "Show less" : `Show ${rows.length - 8} more`}
+        </button>
       )}
     </div>
   );

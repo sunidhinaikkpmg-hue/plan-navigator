@@ -3,7 +3,6 @@ import { useAuth } from "../auth/AuthContext";
 import { isAdminEmail } from "../../lib/user";
 
 const links = [
-  { to: "/", label: "Dashboard" },
   { to: "/plan-checkup", label: "Plan Check-Up" },
   { to: "/plan-health-tests", label: "Plan Health Tests" },
   { to: "/operations-tests", label: "Operations Tests" },

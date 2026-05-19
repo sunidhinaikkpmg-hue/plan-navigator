@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { API_BASE } from "../lib/dataApi";
+import { DetailDrawer, DrawerSection, KVList } from "../components/DetailDrawer";
 
 type TestStatus = "pass" | "warn" | "fail";
 
@@ -27,15 +29,6 @@ interface PlanHealthResponse {
   recommendations: PlanRecommendation[];
 }
 
-interface DataSchemaSheet {
-  sheet_name: string;
-  rows: Array<Record<string, unknown>>;
-}
-
-interface DataSchemaResponse {
-  sheets: DataSchemaSheet[];
-}
-
 interface CardViewModel {
   planId: string;
   testId: string;
@@ -46,8 +39,6 @@ interface CardViewModel {
   impact: string;
   effort: string;
 }
-
-const apiBaseUrl = "http://127.0.0.1:8000/api";
 
 function statusClass(status: TestStatus) {
   if (status === "fail") return "ph-status danger";
@@ -68,31 +59,19 @@ function recommendationPriority(status: string | undefined): number {
   return 1;
 }
 
-async function fetchPlanIds(): Promise<string[]> {
-  const response = await fetch(`${apiBaseUrl}/data-schema?offset=0&limit=100`);
-  if (!response.ok) return [];
-
-  const payload = (await response.json()) as DataSchemaResponse;
-  const plansSheet = payload.sheets.find((sheet) => sheet.sheet_name.toLowerCase() === "plans");
-  if (!plansSheet) return [];
-
-  const ids = plansSheet.rows
-    .map((row) => row.plan_id)
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-
-  return Array.from(new Set(ids));
-}
-
-async function fetchPlanHealth(planId: string): Promise<PlanHealthResponse | null> {
-  const response = await fetch(`${apiBaseUrl}/plans/${encodeURIComponent(planId)}/health-tests`);
-  if (!response.ok) return null;
-  return (await response.json()) as PlanHealthResponse;
-}
+const CARD_LIMIT = 6;
 
 export function PlanHealthTests() {
   const [cards, setCards] = useState<CardViewModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [showAllCards, setShowAllCards] = useState(false);
+
+  // Detail drawer state
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [detailData, setDetailData] = useState<PlanHealthResponse | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,53 +81,42 @@ export function PlanHealthTests() {
       setError("");
 
       try {
-        const planIds = await fetchPlanIds();
-        if (planIds.length === 0) {
-          if (!cancelled) setCards([]);
-          return;
-        }
-
-        const results = await Promise.all(planIds.map((planId) => fetchPlanHealth(planId)));
+        const response = await fetch(`${API_BASE}/plan-health`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = (await response.json()) as PlanHealthResponse;
         if (cancelled) return;
 
+        const recommendationByPlanTest = new Map<string, { description: string; status?: string }>();
+        for (const rec of payload.recommendations) {
+          const key = `${(rec as PlanRecommendation & { planId?: string }).planId ?? ""}-${rec.testId}`;
+          const existing = recommendationByPlanTest.get(key);
+          if (!existing || recommendationPriority(rec.status) > recommendationPriority(existing.status)) {
+            recommendationByPlanTest.set(key, { description: rec.description, status: rec.status });
+          }
+        }
+
         const nextCards: CardViewModel[] = [];
-
-        for (let i = 0; i < planIds.length; i += 1) {
-          const planId = planIds[i];
-          const payload = results[i];
-          if (!payload) continue;
-
-          const recommendationByTestId = new Map<string, { description: string; status?: string }>();
-          for (const rec of payload.recommendations) {
-            if (rec.testId && rec.description) {
-              const existing = recommendationByTestId.get(rec.testId);
-              if (!existing || recommendationPriority(rec.status) > recommendationPriority(existing.status)) {
-                recommendationByTestId.set(rec.testId, { description: rec.description, status: rec.status });
-              }
-            }
-          }
-
-          for (const test of payload.diagnostic_tests) {
-            nextCards.push({
-              planId,
-              testId: test.id,
-              name: test.name,
-              status: test.status,
-              benchmark: test.benchmark ?? "-",
-              recommendationDescription:
-                recommendationByTestId.get(test.id)?.description || test.recommendation || "No recommendation description available.",
-              impact: test.impact ?? "-",
-              effort: test.effort ?? "-",
-            });
-          }
+        const seen = new Set<string>();
+        for (const test of payload.diagnostic_tests) {
+          const planId = (test as PlanHealthTest & { planId?: string }).planId ?? "";
+          const dedup = `${planId}-${test.id}`;
+          if (seen.has(dedup)) continue;
+          seen.add(dedup);
+          const recKey = `${planId}-${test.id}`;
+          nextCards.push({
+            planId,
+            testId: test.id,
+            name: test.name,
+            status: test.status,
+            benchmark: test.benchmark ?? "-",
+            recommendationDescription:
+              recommendationByPlanTest.get(recKey)?.description || test.recommendation || "No recommendation description available.",
+            impact: test.impact ?? "-",
+            effort: test.effort ?? "-",
+          });
         }
 
-        const uniqueCards = new Map<string, CardViewModel>();
-        for (const card of nextCards) {
-          uniqueCards.set(`${card.planId}-${card.testId}`, card);
-        }
-
-        setCards(Array.from(uniqueCards.values()));
+        setCards(nextCards);
       } catch {
         if (!cancelled) {
           setError("Failed to load plan-health cards from backend API.");
@@ -166,9 +134,30 @@ export function PlanHealthTests() {
     };
   }, []);
 
+  // Fetch per-plan detail when a plan is selected
+  useEffect(() => {
+    if (!selectedPlanId) return;
+    let cancelled = false;
+    setDetailLoading(true);
+    setDetailError(null);
+    setDetailData(null);
+
+    fetch(`${API_BASE}/plans/${encodeURIComponent(selectedPlanId)}/plan-health`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<PlanHealthResponse>;
+      })
+      .then((data) => { if (!cancelled) setDetailData(data); })
+      .catch((e) => { if (!cancelled) setDetailError(e instanceof Error ? e.message : "Failed to load."); })
+      .finally(() => { if (!cancelled) setDetailLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [selectedPlanId]);
+
   const cardCountLabel = `${cards.length} card${cards.length !== 1 ? "s" : ""}`;
 
   return (
+    <>
     <section className="page-shell ph-shell">
       <div className="ph-header-row">
         <div>
@@ -191,10 +180,66 @@ export function PlanHealthTests() {
         <div className="state-box">No plan-health cards available.</div>
       )}
 
-      {!loading && !error && cards.length > 0 && (
-        <div className="ph-grid">
-          {cards.map((card) => (
-            <article key={`${card.planId}-${card.testId}`} className="ph-card">
+      {!loading && !error && cards.length > 0 && (() => {
+        const pass = cards.filter(c => c.status === "pass").length;
+        const warn = cards.filter(c => c.status === "warn").length;
+        const fail = cards.filter(c => c.status === "fail").length;
+        const total = pass + warn + fail;
+        const score = total ? Math.round((pass / total) * 100) : 0;
+        const passAngle = total ? (pass / total) * 360 : 0;
+        const warnAngle = total ? (warn / total) * 360 : 0;
+        const conic = `conic-gradient(#22c55e 0deg ${passAngle}deg, #f59e0b ${passAngle}deg ${passAngle + warnAngle}deg, #ef4444 ${passAngle + warnAngle}deg 360deg)`;
+
+        return (
+          <>
+            <div style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "24px",
+              padding: "20px",
+              background: "#f8fafc",
+              borderRadius: "16px"
+            }}>
+              <div style={{
+                width: "140px",
+                height: "140px",
+                borderRadius: "50%",
+                background: conic,
+                position: "relative",
+                flexShrink: 0
+              }}>
+                <div style={{
+                  position: "absolute",
+                  top: "50%",
+                  left: "50%",
+                  transform: "translate(-50%, -50%)",
+                  width: "80px",
+                  height: "80px",
+                  borderRadius: "50%",
+                  background: "#ffffff"
+                }} />
+              </div>
+
+              <div style={{ textAlign: "right" }}>
+                <h1 style={{ margin: 0 }}>{score}%</h1>
+                <p style={{ margin: 0, color: "#64748b" }}>Overall Score</p>
+                <div style={{ marginTop: "12px", display: "flex", gap: "16px", justifyContent: "flex-end" }}>
+                  <span>✅ {pass} Pass</span>
+                  <span>⚠️ {warn} Warn</span>
+                  <span>❌ {fail} Fail</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="ph-grid">
+          {(showAllCards ? cards : cards.slice(0, CARD_LIMIT)).map((card) => (
+            <article
+              key={`${card.planId}-${card.testId}`}
+              className="ph-card"
+              onClick={() => setSelectedPlanId(card.planId)}
+              style={{ cursor: "pointer" }}
+            >
               <div className="ph-card-top">
                 <div>
                   <h3>{card.name}</h3>
@@ -219,8 +264,170 @@ export function PlanHealthTests() {
               </div>
             </article>
           ))}
-        </div>
-      )}
+            </div>
+
+            {cards.length > CARD_LIMIT && (
+              <button
+                onClick={() => setShowAllCards((v) => !v)}
+                style={{
+                  marginTop: "12px",
+                  display: "block",
+                  background: "none",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "8px 20px",
+                  fontSize: "0.875rem",
+                  color: "#475569",
+                  cursor: "pointer",
+                  width: "100%",
+                }}
+              >
+                {showAllCards ? "Show less" : `Show ${cards.length - CARD_LIMIT} more`}
+              </button>
+            )}
+          </>
+        );
+      })()}
     </section>
+
+    <DetailDrawer
+      isOpen={selectedPlanId !== null}
+      onClose={() => setSelectedPlanId(null)}
+      title={`Plan Health · Plan ${selectedPlanId ?? ""}`}
+      loading={detailLoading}
+      error={detailError}
+    >
+      {detailData && (
+        <>
+ {detailData?.diagnostic_tests.map((test) => (
+  <div key={test.id} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+    
+    {/* DESCRIPTION */}
+    <p style={{ fontSize: "13px", color: "#475569" }}>
+      {test.recommendation || "No description available."}
+    </p>
+
+    {/* CURRENT vs BENCHMARK */}
+    <div style={{ display: "flex", gap: "40px" }}>
+      <div>
+        <small style={{ color: "#64748b" }}>Current</small>
+        <h2 style={{ margin: "4px 0" }}>{test.currentValue || "-"}</h2>
+      </div>
+
+      <div>
+        <small style={{ color: "#64748b" }}>Benchmark</small>
+        <h2 style={{ margin: "4px 0" }}>{test.benchmark || "-"}</h2>
+      </div>
+    </div>
+
+    {/* PEER BENCHMARK */}
+    <div
+      style={{
+        background: "#f1f5f9",
+        padding: "12px",
+        borderRadius: "10px",
+      }}
+    >
+      <strong style={{ fontSize: "12px" }}>PEER BENCHMARK</strong>
+
+      <div style={{ marginTop: "8px" }}>
+        <div
+          style={{
+            height: "6px",
+            background: "#e5e7eb",
+            borderRadius: "4px",
+          }}
+        >
+          <div
+            style={{
+              width: "30%", // you can later map percentile here
+              height: "100%",
+              background: "linear-gradient(to right, red, orange, green)",
+            }}
+          />
+        </div>
+      </div>
+    </div>
+
+    {/* DETAILS */}
+    <div
+      style={{
+        background: "#f1f5f9",
+        padding: "12px",
+        borderRadius: "10px",
+      }}
+    >
+      <strong style={{ fontSize: "12px" }}>DETAILS</strong>
+
+      <div style={{ marginTop: "6px", fontSize: "13px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span>Category</span>
+          <span>{test.category}</span>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span>Status</span>
+          <span>{test.status.toUpperCase()}</span>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span>Impact</span>
+          <span>{test.impact}</span>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span>Effort</span>
+          <span>{test.effort}</span>
+        </div>
+      </div>
+    </div>
+
+    {/* RECOMMENDATION */}
+    <div
+      style={{
+        background: "#e2f4fe",
+        padding: "12px",
+        borderRadius: "10px",
+      }}
+    >
+      <strong style={{ fontSize: "12px" }}>RECOMMENDATION</strong>
+
+      <p style={{ fontSize: "13px", marginTop: "4px" }}>
+        {test.recommendation || "No recommendation available"}
+      </p>
+
+      <div style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+        <span
+          style={{
+            background: "#4dbffc",
+            padding: "2px 8px",
+            borderRadius: "999px",
+            fontSize: "11px",
+          }}
+        >
+          {test.impact} impact
+        </span>
+
+        <span
+          style={{
+            background: "#e5e7eb",
+            padding: "2px 8px",
+            borderRadius: "999px",
+            fontSize: "11px",
+          }}
+        >
+          {test.effort} effort
+        </span>
+      </div>
+    </div>
+  </div>
+))}
+
+
+         
+        </>
+      )}
+    </DetailDrawer>
+  </>
   );
 }

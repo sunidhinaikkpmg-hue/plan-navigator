@@ -89,7 +89,7 @@
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: #ef4444;
+  background: #2f59a7;
   color: white;
   display: flex;
   align-items: center;
@@ -148,7 +148,7 @@
 }
 
 .dropdown-item.logout {
-  color: #dc2626;
+  color: #2f59a7;
 }
 
 .dropdown-item.logout:hover {
@@ -184,7 +184,7 @@
   border-radius: 14px;
   display: grid;
   place-items: center;
-  background: #e11d48;
+  background: #2f59a7;
   font-weight: 700;
   color: #fff;
 }
@@ -309,9 +309,43 @@
   border-radius: 14px;
   padding: 14px 18px;
   font-weight: 700;
-  background: #ef4444;
+  background: #2f59a7;
   color: white;
   cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.login-card button:hover:not(:disabled) {
+  background: #436bb5;
+}
+
+.password-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-input-wrapper input {
+  padding-right: 48px; /* Space for the icon */
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 6px;
+  background: transparent !important;
+  color: #9ca3af !important;
+  padding: 8px !important;
+  width: auto !important;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.password-toggle-btn:hover {
+  color: #4b5563 !important;
+  background: #f3f4f6 !important;
 }
 
 .login-card button:disabled {
@@ -320,7 +354,7 @@
 }
 
 .form-error {
-  color: #dc2626;
+  color: #2f59a7;
   font-size: 0.95rem;
 }
 
@@ -372,9 +406,9 @@
 }
 
 .quick-switch-btn:hover {
-  background: #ef4444;
-  color: white;
-  border-color: #ef4444;
+  background: #ffffff;
+  border-color: #2f59a7;
+  color: #2f59a7;
 }
 
 .login-toggle {
@@ -384,18 +418,19 @@
 .toggle-button {
   border: none;
   background: transparent;
-  color: #ef4444;
+  color: #2f59a7;
   font-weight: 600;
   cursor: pointer;
   width: 100%;
   padding: 12px 18px;
   border-radius: 14px;
-  background: #fee2e2;
-  transition: background 0.2s ease;
+  background: #f1f5f9;
+  transition: all 0.2s ease;
 }
 
 .toggle-button:hover {
-  background: #fecaca;
+  background: #f8fafc;
+  color: #436bb5;
 }
 
 .ph-shell {

@@ -1,554 +1,863 @@
-from __future__ import annotations
-
-from collections import defaultdict
-from datetime import datetime
-from typing import Any
-
-from fastapi import APIRouter, HTTPException, Query
-
-from backend.app.db.connect import (
-	get_ai_interactions,
-	get_campaigns,
-	get_data_schema as get_workbook_data_schema,
-	get_diagnostic_tests,
-	get_documents,
-	get_payroll_files,
-	get_peer_benchmarks,
-	get_plan,
-	get_recommendations,
-	get_test_results,
-	get_usage_events,
-)
+from fastapi import APIRouter, HTTPException
+import psycopg2
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+from ..schema import schema as models
 
 router = APIRouter()
-
-VALID_STATUSES = ("pass", "warn", "fail")
-DAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-
-
-@router.get("/data-schema")
-def get_data_schema(
-	offset: int = Query(default=0, ge=0),
-	limit: int = Query(default=10, ge=1, le=1000),
-) -> dict[str, Any]:
-	return get_workbook_data_schema(offset=offset, limit=limit)
-
-
-def _coerce_float(value: Any) -> float | None:
-	if value is None or value == "":
-		return None
-	try:
-		return float(value)
-	except (TypeError, ValueError):
-		return None
-
-
-def _format_value(value: Any) -> str | None:
-	if value is None or value == "":
-		return None
-	return str(value)
-
-
-def _build_percentile(current_value: Any, benchmark_row: dict[str, Any] | None) -> int | None:
-	if not benchmark_row:
-		return None
-
-	current = _coerce_float(current_value)
-	bottom = _coerce_float(benchmark_row.get("bottom_quartile"))
-	median = _coerce_float(benchmark_row.get("median"))
-	top = _coerce_float(benchmark_row.get("top_quartile"))
-	if None in (current, bottom, median, top):
-		return None
-
-	if current <= bottom:
-		percentile = 25 * (current / bottom) if bottom else 0
-	elif current <= median:
-		span = median - bottom
-		percentile = 25 + (25 * (current - bottom) / span if span else 0)
-	elif current <= top:
-		span = top - median
-		percentile = 50 + (25 * (current - median) / span if span else 0)
-	else:
-		percentile = 75 + (25 * ((current - top) / top) if top else 25)
-
-	return max(0, min(100, round(percentile)))
-
-
-def _build_test_details(test_result: dict[str, Any]) -> list[dict[str, str]]:
-	details: list[dict[str, str]] = []
-
-	as_of_date = _format_value(test_result.get("as_of_date"))
-	if as_of_date:
-		details.append({"label": "As of date", "value": as_of_date})
-
-	numeric_value = _format_value(test_result.get("numeric_value"))
-	if numeric_value:
-		details.append({"label": "Numeric value", "value": numeric_value})
-
-	return details
-
-
-def _build_summary(test_rows: list[dict[str, Any]]) -> dict[str, int]:
-	summary = {status: 0 for status in VALID_STATUSES}
-	for row in test_rows:
-		status = row.get("status")
-		if status in summary:
-			summary[status] += 1
-	return summary
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-	if not isinstance(value, str) or not value:
-		return None
-	try:
-		return datetime.fromisoformat(value.replace("Z", "+00:00"))
-	except ValueError:
-		return None
-
-
-def _interaction_tokens(row: dict[str, Any]) -> int:
-	input_tokens = int(row.get("input_tokens") or 0)
-	output_tokens = int(row.get("output_tokens") or 0)
-	return input_tokens + output_tokens
-
-
-def _usage_analytics(ai_rows: list[dict[str, Any]], usage_rows: list[dict[str, Any]]) -> dict[str, Any]:
-	interactions_with_time = []
-	for row in ai_rows:
-		ts = _parse_iso_datetime(row.get("created_at"))
-		if ts is None:
-			continue
-		interactions_with_time.append((row, ts))
-
-	interactions_with_time.sort(key=lambda item: item[1])
-
-	monthly_buckets: dict[str, dict[str, float]] = defaultdict(lambda: {"tokens": 0, "cost": 0.0})
-	daily_buckets: dict[str, dict[str, Any]] = defaultdict(lambda: {"queries": 0, "tokens": 0, "users": set()})
-	feature_tokens: dict[str, int] = defaultdict(int)
-	user_metrics: dict[str, dict[str, Any]] = defaultdict(lambda: {"queries": 0, "tokens": 0, "last_seen": None})
-	recent_sessions = []
-
-	for row, ts in interactions_with_time:
-		tokens = _interaction_tokens(row)
-		month_key = ts.strftime("%Y-%m")
-		month_label = ts.strftime("%b")
-		monthly_buckets[month_key]["month"] = month_label
-		monthly_buckets[month_key]["tokens"] += tokens
-		monthly_buckets[month_key]["cost"] += float(row.get("cost_usd") or 0)
-
-		date_key = ts.strftime("%Y-%m-%d")
-		daily_buckets[date_key]["day"] = DAY_LABELS[ts.weekday()]
-		daily_buckets[date_key]["queries"] += 1
-		daily_buckets[date_key]["tokens"] += tokens
-		if row.get("user_id"):
-			daily_buckets[date_key]["users"].add(row.get("user_id"))
-
-		feature = str(row.get("feature") or "other")
-		feature_tokens[feature] += tokens
-
-		user_id = str(row.get("user_id") or "unknown")
-		user_metrics[user_id]["queries"] += 1
-		user_metrics[user_id]["tokens"] += tokens
-		user_metrics[user_id]["last_seen"] = ts
-
-		recent_sessions.append(
-			{
-				"id": row.get("id"),
-				"userId": row.get("user_id"),
-				"planId": row.get("plan_id"),
-				"query": row.get("prompt"),
-				"feature": row.get("feature"),
-				"inputTokens": int(row.get("input_tokens") or 0),
-				"outputTokens": int(row.get("output_tokens") or 0),
-				"tokens": tokens,
-				"costUsd": float(row.get("cost_usd") or 0),
-				"createdAt": row.get("created_at"),
-			}
-		)
-
-	monthly_usage = [
-		{
-			"month": monthly_buckets[key]["month"],
-			"tokens": int(monthly_buckets[key]["tokens"]),
-			"cost": round(float(monthly_buckets[key]["cost"]), 4),
-		}
-		for key in sorted(monthly_buckets.keys())[-6:]
-	]
-
-	daily_dates = sorted(daily_buckets.keys())[-7:]
-	daily_usage = [
-		{
-			"day": daily_buckets[date_key]["day"],
-			"sessions": len(daily_buckets[date_key]["users"]),
-			"queries": int(daily_buckets[date_key]["queries"]),
-			"tokens": int(daily_buckets[date_key]["tokens"]),
-		}
-		for date_key in daily_dates
-	]
-
-	total_feature_tokens = sum(feature_tokens.values())
-	feature_usage = [
-		{
-			"name": feature,
-			"tokens": tokens,
-			"value": round((tokens / total_feature_tokens) * 100, 1) if total_feature_tokens else 0,
-		}
-		for feature, tokens in sorted(feature_tokens.items(), key=lambda item: item[1], reverse=True)
-	]
-
-	monthly_user_sets: dict[str, set[str]] = defaultdict(set)
-	first_seen_month: dict[str, str] = {}
-	for row, ts in interactions_with_time:
-		user_id = str(row.get("user_id") or "unknown")
-		month_key = ts.strftime("%Y-%m")
-		monthly_user_sets[month_key].add(user_id)
-		first_seen_month.setdefault(user_id, month_key)
-
-	active_users = []
-	for month_key in sorted(monthly_user_sets.keys())[-6:]:
-		new_users = sum(1 for user_id in monthly_user_sets[month_key] if first_seen_month.get(user_id) == month_key)
-		active_users.append(
-			{
-				"month": datetime.strptime(month_key, "%Y-%m").strftime("%b"),
-				"active": len(monthly_user_sets[month_key]),
-				"new": new_users,
-			}
-		)
-
-	top_users = [
-		{
-			"userId": user_id,
-			"queries": values["queries"],
-			"tokens": values["tokens"],
-			"lastActive": values["last_seen"].isoformat() if values["last_seen"] else None,
-		}
-		for user_id, values in sorted(
-			user_metrics.items(),
-			key=lambda item: (item[1]["queries"], item[1]["tokens"]),
-			reverse=True,
-		)[:10]
-	]
-
-	recent_sessions = sorted(recent_sessions, key=lambda session: session["createdAt"], reverse=True)[:10]
-
-	total_tokens = sum(month["tokens"] for month in monthly_usage)
-	total_cost = sum(month["cost"] for month in monthly_usage)
-	token_growth = 0.0
-	if len(monthly_usage) >= 2 and monthly_usage[-2]["tokens"]:
-		token_growth = round(((monthly_usage[-1]["tokens"] - monthly_usage[-2]["tokens"]) / monthly_usage[-2]["tokens"]) * 100, 1)
-
-	avg_queries_per_day = round(sum(day["queries"] for day in daily_usage) / len(daily_usage)) if daily_usage else 0
-	current_active_users = active_users[-1]["active"] if active_users else 0
-	new_users_this_month = active_users[-1]["new"] if active_users else 0
-
-	usage_events_with_time = []
-	for row in usage_rows:
-		ts = _parse_iso_datetime(row.get("occurred_at"))
-		if ts is None:
-			continue
-		usage_events_with_time.append((row, ts))
-
-	event_type_counts: dict[str, int] = defaultdict(int)
-	page_counts: dict[str, int] = defaultdict(int)
-	event_daily_buckets: dict[str, dict[str, Any]] = defaultdict(lambda: {"events": 0, "users": set()})
-
-	for row, ts in usage_events_with_time:
-		event_type = str(row.get("event_type") or "unknown")
-		page = str(row.get("page") or "unknown")
-		event_type_counts[event_type] += 1
-		page_counts[page] += 1
-
-		date_key = ts.strftime("%Y-%m-%d")
-		event_daily_buckets[date_key]["day"] = DAY_LABELS[ts.weekday()]
-		event_daily_buckets[date_key]["events"] += 1
-		if row.get("user_id"):
-			event_daily_buckets[date_key]["users"].add(row.get("user_id"))
-
-	event_daily = [
-		{
-			"day": event_daily_buckets[key]["day"],
-			"events": event_daily_buckets[key]["events"],
-			"activeUsers": len(event_daily_buckets[key]["users"]),
-		}
-		for key in sorted(event_daily_buckets.keys())[-7:]
-	]
-
-	return {
-		"kpis": {
-			"totalTokens": total_tokens,
-			"totalCost": round(total_cost, 4),
-			"tokenGrowthPercent": token_growth,
-			"activeUsers": current_active_users,
-			"newUsersThisMonth": new_users_this_month,
-			"avgQueriesPerDay": avg_queries_per_day,
-		},
-		"monthlyTokenUsage": monthly_usage,
-		"dailyUsage": daily_usage,
-		"activeUsers": active_users,
-		"topUsers": top_users,
-		"recentSessions": recent_sessions,
-		"usageEventsSummary": {
-			"eventTypeCounts": dict(sorted(event_type_counts.items(), key=lambda item: item[1], reverse=True)),
-			"pageCounts": dict(sorted(page_counts.items(), key=lambda item: item[1], reverse=True)),
-			"daily": event_daily,
-		},
-	}
-
-
-def _serialize_recommendation(
-	recommendation: dict[str, Any],
-	diagnostic_test: dict[str, Any],
-) -> dict[str, Any]:
-	return {
-		"id": recommendation.get("id"),
-		"testId": recommendation.get("test_id"),
-		"testName": diagnostic_test.get("name"),
-		"category": diagnostic_test.get("category"),
-		"title": recommendation.get("title"),
-		"description": recommendation.get("description"),
-		"impact": recommendation.get("impact"),
-		"effort": recommendation.get("effort"),
-		"status": recommendation.get("status"),
-		"potentialImprovement": recommendation.get("potential_improvement"),
-	}
-
-
-def _recommendation_priority(status: Any) -> int:
-	normalized = str(status or "").lower()
-	if normalized == "in-progress":
-		return 3
-	if normalized == "open":
-		return 2
-	if normalized == "pending":
-		return 1
-	if normalized == "dismissed":
-		return 0
-	return 1
-
-
-@router.get("/plans/{plan_id}/health-tests")
-def get_plan_health_tests(
-	plan_id: str,
-) -> dict[str, Any]:
-	if get_plan(plan_id) is None:
-		raise HTTPException(status_code=404, detail="Plan not found")
-
-	diagnostic_tests = get_diagnostic_tests()
-	peer_benchmarks = get_peer_benchmarks()
-	test_results = get_test_results(plan_id)
-	recommendations = get_recommendations(plan_id)
-
-	joined_tests: list[dict[str, Any]] = []
-	filtered_test_ids: set[str] = set()
-
-	recommendations_by_test_id = {
-		recommendation.get("test_id"): recommendation
-		for recommendation in recommendations
-		if recommendation.get("test_id")
-	}
-
-	for test_result in test_results:
-		test_id = test_result.get("test_id")
-		diagnostic_test = diagnostic_tests.get(test_id)
-		if not diagnostic_test:
-			continue
-
-		filtered_test_ids.add(test_id)
-		recommendation = recommendations_by_test_id.get(test_id)
-		benchmark_row = peer_benchmarks.get(test_id)
-		joined_tests.append(
-			{
-				"id": diagnostic_test.get("diagnostic_tests_id"),
-				"name": diagnostic_test.get("name"),
-				"category": diagnostic_test.get("category"),
-				"status": test_result.get("status"),
-				"currentValue": _format_value(test_result.get("current_value")),
-				"benchmark": _format_value(diagnostic_test.get("benchmark")),
-				"description": diagnostic_test.get("description"),
-				"recommendation": recommendation.get("description") if recommendation else None,
-				"impact": diagnostic_test.get("impact"),
-				"effort": diagnostic_test.get("effort"),
-				"details": _build_test_details(test_result),
-				"peerBenchmark": {
-					"percentile": _build_percentile(test_result.get("numeric_value"), benchmark_row),
-					"bottomQuartile": _format_value(benchmark_row.get("bottom_quartile")) if benchmark_row else None,
-					"median": _format_value(benchmark_row.get("median")) if benchmark_row else None,
-					"topQuartile": _format_value(benchmark_row.get("top_quartile")) if benchmark_row else None,
-					"peerSet": _format_value(benchmark_row.get("peer_set")) if benchmark_row else None,
-				},
-			}
-		)
-
-	filtered_recommendations = []
-	for recommendation in recommendations:
-		test_id = recommendation.get("test_id")
-		diagnostic_test = diagnostic_tests.get(test_id)
-		if not diagnostic_test:
-			continue
-		if test_id not in filtered_test_ids:
-			continue
-
-		filtered_recommendations.append(_serialize_recommendation(recommendation, diagnostic_test))
-
-	summary_source = [
-		row
-		for row in test_results
-		if row.get("test_id") in filtered_test_ids
-	]
-
-	return {
-		"diagnostic_tests": joined_tests,
-		"recommendations": filtered_recommendations,
-		"summary": _build_summary(summary_source),
-	}
-
-
-@router.get("/plans/{plan_id}/recommendations")
-def get_plan_recommendations(
-	plan_id: str,
-	category: str | None = Query(default=None),
-) -> dict[str, list[dict[str, Any]]]:
-	if get_plan(plan_id) is None:
-		raise HTTPException(status_code=404, detail="Plan not found")
-
-	diagnostic_tests = get_diagnostic_tests()
-	recommendations = get_recommendations(plan_id)
-
-	result: list[dict[str, Any]] = []
-	for recommendation in recommendations:
-		test_id = recommendation.get("test_id")
-		diagnostic_test = diagnostic_tests.get(test_id)
-		if not diagnostic_test:
-			continue
-		if category and diagnostic_test.get("category") != category:
-			continue
-
-		result.append(_serialize_recommendation(recommendation, diagnostic_test))
-
-	return {"recommendations": result}
-
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+
+# ✅ DB connection
+def get_connection():
+    return psycopg2.connect(
+        host="127.0.0.1",
+        port=5432,
+        user="postgres",
+        password=os.getenv("DB_PASSWORD"),
+        dbname="postgres",
+    )
+
+
+# ✅ helper to convert rows → dict
+def fetch_as_dict(cursor):
+    columns = [desc[0] for desc in cursor.description]
+    rows = cursor.fetchall()
+    return [dict(zip(columns, row)) for row in rows]
+
+
+# ==========================================
+#  GET /plans  (list all plan IDs + metadata)
+# ==========================================
+
+@router.get("/plans")
+def get_all_plans():
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT plan_id, name, plan_type FROM plans ORDER BY plan_id")
+        plans = fetch_as_dict(cursor)
+        return {"plans": plans}
+    except psycopg2.OperationalError:
+        # DB not reachable — return empty list so the UI degrades gracefully
+        return {"plans": [], "error": "Database unavailable"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ==========================================
+#  GET /documents  (all documents, single query)
+# ==========================================
+
+@router.get("/documents")
+def get_all_documents():
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                id,
+                name,
+                category AS "type",
+                file_url AS "url",
+                plan_year AS "planYear",
+                uploaded_at AS "uploadedAt",
+                plan_id
+            FROM documents
+            ORDER BY plan_id, uploaded_at DESC
+        """)
+        documents = fetch_as_dict(cursor)
+        return {"documents": documents}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ==========================================
+#  GET /campaigns  (all campaigns, single query)
+# ==========================================
+
+@router.get("/campaigns")
+def get_all_campaigns():
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM education_campaigns ORDER BY date_launched DESC")
+        campaigns = fetch_as_dict(cursor)
+        return {"campaigns": campaigns}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ==========================================
+#  GET /payroll-files  (all payroll files, single query)
+# ==========================================
+
+@router.get("/payroll-files")
+def get_all_payroll_files():
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM payroll_files ORDER BY plan_id, received_at DESC")
+        payroll_files = fetch_as_dict(cursor)
+        return {"payroll_files": payroll_files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ==========================================
+#  GET /recommendations  (all plans, single query)
+# ==========================================
+
+@router.get("/recommendations")
+def get_all_recommendations():
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                id,
+                plan_id AS "planId",
+                test_id AS "testId",
+                title,
+                description,
+                impact,
+                effort,
+                status,
+                potential_improvement AS "potentialImprovement"
+            FROM recommendations
+            ORDER BY plan_id
+        """)
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        recommendations = [dict(zip(columns, row)) for row in rows]
+        return {"recommendations": recommendations}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ==========================================
+#  GET /plan-health  (all plans, single pass)
+# ==========================================
+
+@router.get("/plan-health")
+def get_all_plan_health():
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM test_results")
+        test_results = fetch_as_dict(cursor)
+
+        cursor.execute("SELECT * FROM diagnostic_tests")
+        diagnostic_tests_list = fetch_as_dict(cursor)
+        diagnostic_tests = {r["id"]: r for r in diagnostic_tests_list}
+
+        cursor.execute("SELECT * FROM peer_benchmarks")
+        peer_benchmarks_list = fetch_as_dict(cursor)
+        peer_benchmarks = {r["test_id"]: r for r in peer_benchmarks_list if r.get("test_id")}
+
+        cursor.execute("SELECT * FROM recommendations")
+        all_recs = fetch_as_dict(cursor)
+        # key: (plan_id, test_id) -> best rec
+        rec_map: dict = {}
+        for r in all_recs:
+            key = (r.get("plan_id"), r.get("test_id"))
+            if key not in rec_map:
+                rec_map[key] = r
+
+        joined_tests = []
+        seen: set = set()
+        for tr in test_results:
+            plan_id = tr.get("plan_id")
+            test_id = tr.get("test_id")
+            dt = diagnostic_tests.get(test_id)
+            if not dt:
+                continue
+            dedup_key = f"{plan_id}-{test_id}"
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            rec = rec_map.get((plan_id, test_id))
+            bm = peer_benchmarks.get(test_id)
+
+            joined_tests.append({
+                "planId": plan_id,
+                "id": dt.get("id"),
+                "name": dt.get("name"),
+                "category": dt.get("category"),
+                "status": tr.get("status"),
+                "currentValue": tr.get("current_value"),
+                "benchmark": dt.get("benchmark"),
+                "description": dt.get("description"),
+                "recommendation": rec.get("description") if rec else None,
+                "impact": dt.get("impact"),
+                "effort": dt.get("effort"),
+            })
+
+        serialized_recs = []
+        for rec in all_recs:
+            test_id = rec.get("test_id")
+            dt = diagnostic_tests.get(test_id)
+            if not dt:
+                continue
+            serialized_recs.append({
+                "id": rec.get("id"),
+                "planId": rec.get("plan_id"),
+                "testId": rec.get("test_id"),
+                "testName": dt.get("name"),
+                "category": dt.get("category"),
+                "title": rec.get("title"),
+                "description": rec.get("description"),
+                "impact": rec.get("impact"),
+                "effort": rec.get("effort"),
+                "status": rec.get("status"),
+                "potentialImprovement": rec.get("potential_improvement"),
+            })
+
+        return {"diagnostic_tests": joined_tests, "recommendations": serialized_recs}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ==========================================
+#  GET /check-up  (all plans, single pass)
+# ==========================================
+
+@router.get("/check-up")
+def get_all_checkup():
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM diagnostic_tests")
+        diagnostic_map = {d["id"]: d for d in fetch_as_dict(cursor)}
+
+        cursor.execute("SELECT * FROM test_results")
+        test_results = fetch_as_dict(cursor)
+
+        cursor.execute("SELECT * FROM peer_benchmarks")
+        peer_map = {p["test_id"]: p for p in fetch_as_dict(cursor) if p.get("test_id")}
+
+        cursor.execute("SELECT * FROM recommendations")
+        rec_map: dict = {}
+        for r in fetch_as_dict(cursor):
+            key = (r.get("plan_id"), r.get("test_id"))
+            if key not in rec_map:
+                rec_map[key] = r
+
+        cursor.execute("SELECT * FROM ai_interactions")
+        ai_map: dict = {}
+        for a in fetch_as_dict(cursor):
+            key = (a.get("plan_id"), a.get("feature"))
+            if key not in ai_map:
+                ai_map[key] = a
+
+        checkup_results = []
+        for tr in test_results:
+            plan_id = tr.get("plan_id")
+            test_id = tr.get("test_id")
+            dt = diagnostic_map.get(test_id)
+            if not dt:
+                continue
+            bm = peer_map.get(test_id)
+            rec = rec_map.get((plan_id, test_id))
+            ai = ai_map.get((plan_id, test_id))
+
+            checkup_results.append({
+                "planId": plan_id,
+                "testId": dt.get("id"),
+                "name": dt.get("name"),
+                "category": dt.get("category"),
+                "description": dt.get("description"),
+                "value": tr.get("numeric_value") or tr.get("current_value"),
+                "resultStatus": tr.get("status"),
+                "benchmark": dt.get("benchmark"),
+                "percentile": bm.get("percentile") if bm else None,
+                "bottomQuartile": bm.get("bottom_quartile") if bm else None,
+                "median": bm.get("median") if bm else None,
+                "topQuartile": bm.get("top_quartile") if bm else None,
+                "recommendationTitle": rec.get("title") if rec else None,
+                "recommendation": rec.get("description") if rec else None,
+                "impact": rec.get("impact") if rec else None,
+                "effort": rec.get("effort") if rec else None,
+                "recommendationStatus": rec.get("status") if rec else None,
+                "aiExplanation": ai.get("response") if ai else None,
+            })
+
+        return {"checkup": checkup_results}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ==========================================
+#  GET /plans/{plan_id}/campaigns
+# ==========================================
+@router.get("/plans/{plan_id}/campaigns")
+def get_plan_campaigns(plan_id: str):
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT 1 FROM plans WHERE plan_id = %s",
+            (plan_id,)
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        cursor.execute(
+            "SELECT * FROM education_campaigns WHERE %s = ANY(plan_ids)",
+            (plan_id,)
+        )
+
+        campaigns = fetch_as_dict(cursor)
+
+        if not campaigns:
+            return {"campaigns": []}   
+
+        return {"campaigns": campaigns}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ==========================================
+#  GET /plans/{plan_id}/documents
+# ==========================================
 
 @router.get("/plans/{plan_id}/documents")
-def get_plan_documents(plan_id: str) -> dict[str, list[dict[str, Any]]]:
-	if get_plan(plan_id) is None:
-		raise HTTPException(status_code=404, detail="Plan not found")
+def get_plan_documents(plan_id: str):
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-	rows = get_documents(plan_id)
-	documents = [
-		{
-			"id": row.get("id"),
-			"planId": row.get("plan_id"),
-			"name": row.get("name"),
-			"type": _format_value(row.get("category")),
-			"fileUrl": row.get("file_url"),
-			"uploadedAt": row.get("uploaded_at"),
-			"planYear": row.get("plan_year"),
-		}
-		for row in rows
-	]
+        # ✅ Check if plan exists
+        cursor.execute(
+            "SELECT 1 FROM plans WHERE plan_id = %s",
+            (plan_id,)
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Plan not found")
 
-	return {"documents": documents}
+        # ✅ Fetch documents
+        cursor.execute("""
+            SELECT
+                id AS id,
+                name AS "name",
+                category AS "type",
+                file_url AS "url",
+                plan_year AS "planYear",
+                uploaded_at AS "uploadedAt",
+                plan_id
+                FROM documents
+                WHERE plan_id = %s
+            """, (plan_id,))
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
 
+        documents = [
+            dict(zip(columns, row)) for row in rows
+        ]
 
-@router.get("/plans/{plan_id}/campaigns")
-def get_plan_campaigns(plan_id: str) -> dict[str, list[dict[str, Any]]]:
-	if get_plan(plan_id) is None:
-		raise HTTPException(status_code=404, detail="Plan not found")
+        return {"documents": documents}
 
-	return {"campaigns": get_campaigns(plan_id)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ==========================================
+#  GET /api/data-schema
+# ==========================================
+
+@router.get("/data-schema")
+def get_data_schema():
+    return {
+        "sheets": [
+            {"sheet_name": "users", "columns": list(models.UserSchema.model_fields.keys())},
+            {"sheet_name": "sponsors", "columns": list(models.SponsorSchema.model_fields.keys())},
+            {"sheet_name": "plans", "columns": list(models.PlanSchema.model_fields.keys())},
+            {"sheet_name": "participants", "columns": list(models.ParticipantSchema.model_fields.keys())},
+            {"sheet_name": "participant_balances", "columns": list(models.ParticipantBalanceSchema.model_fields.keys())},
+            {"sheet_name": "contributions", "columns": list(models.ContributionSchema.model_fields.keys())},
+            {"sheet_name": "match_formula", "columns": list(models.MatchFormulaSchema.model_fields.keys())},
+            {"sheet_name": "investment_options", "columns": list(models.InvestmentOptionSchema.model_fields.keys())},
+            {"sheet_name": "participant_holdings", "columns": list(models.ParticipantHoldingSchema.model_fields.keys())},
+            {"sheet_name": "loans", "columns": list(models.LoanSchema.model_fields.keys())},
+            {"sheet_name": "withdrawals", "columns": list(models.WithdrawalSchema.model_fields.keys())},
+            {"sheet_name": "diagnostic_tests", "columns": list(models.DiagnosticTestSchema.model_fields.keys())},
+            {"sheet_name": "test_results", "columns": list(models.TestResultSchema.model_fields.keys())},
+            {"sheet_name": "peer_benchmarks", "columns": list(models.PeerBenchmarkSchema.model_fields.keys())},
+            {"sheet_name": "recommendations", "columns": list(models.RecommendationSchema.model_fields.keys())},
+            {"sheet_name": "call_center_events", "columns": list(models.CallCenterEventSchema.model_fields.keys())},
+            {"sheet_name": "payroll_files", "columns": list(models.PayrollFileSchema.model_fields.keys())},
+            {"sheet_name": "compliance_filings", "columns": list(models.ComplianceFilingSchema.model_fields.keys())},
+            {"sheet_name": "education_campaigns", "columns": list(models.EducationCampaignSchema.model_fields.keys())},
+            {"sheet_name": "documents", "columns": list(models.DocumentSchema.model_fields.keys())},
+            {"sheet_name": "ai_interactions", "columns": list(models.AIInteractionSchema.model_fields.keys())}
+        ]
+    }
+
+# ==========================================
+#  GET plans/{plan-id}/recommendations
+# ==========================================
+
+@router.get("/plans/{plan_id}/recommendations")
+def get_plan_recommendations(plan_id: str):
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # ✅ Check if plan exists
+        cursor.execute(
+            "SELECT 1 FROM plans WHERE plan_id = %s",
+            (plan_id,)
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        # ✅ Fetch recommendations
+        cursor.execute("""
+            SELECT
+                id,
+                plan_id AS "planId",
+                test_id AS "testId",
+                title,
+                description,
+                impact,
+                effort,
+                status,
+                potential_improvement AS "potentialImprovement"
+            FROM recommendations
+            WHERE plan_id = %s
+        """, (plan_id,))
+
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+
+        recommendations = [
+            dict(zip(columns, row))
+            for row in rows
+        ]
+
+        return {"recommendations": recommendations}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ==========================================
+#  GET plans/{plan-id}/plan-health
+# ==========================================
+
+@router.get("/plans/{plan_id}/plan-health")
+def get_plan_health(plan_id: str):
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # ✅ 1. Check plan exists
+        cursor.execute(
+            "SELECT plan_id FROM plans WHERE plan_id = %s",
+            (plan_id,)
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        # ✅ 2. Fetch data
+        cursor.execute("SELECT * FROM test_results WHERE plan_id = %s", (plan_id,))
+        test_results = fetch_as_dict(cursor)
+
+        cursor.execute("SELECT * FROM diagnostic_tests")
+        diagnostic_tests_list = fetch_as_dict(cursor)
+        diagnostic_tests = {r["id"]: r for r in diagnostic_tests_list}
+
+        cursor.execute("SELECT * FROM peer_benchmarks")
+        peer_benchmarks_list = fetch_as_dict(cursor)
+        peer_benchmarks = {
+            r["test_id"]: r for r in peer_benchmarks_list if r.get("test_id")
+        }
+
+        cursor.execute("SELECT * FROM recommendations WHERE plan_id = %s", (plan_id,))
+        recommendations = fetch_as_dict(cursor)
+
+        # ✅ 3. Map recommendations by test_id
+        recommendations_by_test_id = {
+            r["test_id"]: r for r in recommendations if r.get("test_id")
+        }
+
+        joined_tests = []
+        filtered_test_ids = set()
+
+        # ✅ 4. Join test data
+        for tr in test_results:
+            test_id = tr.get("test_id")
+            dt = diagnostic_tests.get(test_id)
+
+            if not dt:
+                continue
+
+            filtered_test_ids.add(test_id)
+            rec = recommendations_by_test_id.get(test_id)
+            bm = peer_benchmarks.get(test_id)
+
+            joined_tests.append({
+                "id": dt.get("id"),
+                "name": dt.get("name"),
+                "category": dt.get("category"),
+                "status": tr.get("status"),
+                "currentValue": tr.get("current_value"),
+                "benchmark": dt.get("benchmark"),
+                "description": dt.get("description"),
+                "recommendation": rec.get("description") if rec else None,
+                "impact": dt.get("impact"),
+                "effort": dt.get("effort"),
+                "details": [
+                    *(
+                        [{"label": "As of date", "value": str(tr.get("as_of_date"))}]
+                        if tr.get("as_of_date") else []
+                    ),
+                    *(
+                        [{"label": "Numeric value", "value": str(tr.get("numeric_value"))}]
+                        if tr.get("numeric_value") else []
+                    ),
+                ],
+                "peerBenchmark": {
+                    "bottomQuartile": bm.get("bottom_quartile") if bm else None,
+                    "median": bm.get("median") if bm else None,
+                    "topQuartile": bm.get("top_quartile") if bm else None,
+                    "peerSet": bm.get("peer_set") if bm else None,
+                },
+            })
+
+        # ✅ 5. Build recommendations output
+        serialized_recs = []
+        for rec in recommendations:
+            test_id = rec.get("test_id")
+            dt = diagnostic_tests.get(test_id)
+
+            if not dt or test_id not in filtered_test_ids:
+                continue
+
+            serialized_recs.append({
+                "id": rec.get("id"),
+                "testId": rec.get("test_id"),
+                "testName": dt.get("name"),
+                "category": dt.get("category"),
+                "title": rec.get("title"),
+                "description": rec.get("description"),
+                "impact": rec.get("impact"),
+                "effort": rec.get("effort"),
+                "status": rec.get("status"),
+                "potentialImprovement": rec.get("potential_improvement"),
+            })
+
+        return {
+            "diagnostic_tests": joined_tests,
+            "recommendations": serialized_recs
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ==========================================
+#  GET plans/{plan-id}/operations
+# ==========================================
 
 @router.get("/plans/{plan_id}/operations")
-def get_plan_operations(plan_id: str) -> dict[str, list[dict[str, Any]]]:
-	if get_plan(plan_id) is None:
-		raise HTTPException(status_code=404, detail="Plan not found")
+def get_plan_operations(plan_id: str):
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-	diagnostic_tests = get_diagnostic_tests()
-	test_results = get_test_results(plan_id)
-	recommendations = get_recommendations(plan_id)
+        # ✅ 1. Check if plan exists
+        cursor.execute(
+            "SELECT plan_id FROM plans WHERE plan_id = %s",
+            (plan_id,)
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Plan not found")
 
-	latest_result_by_test_id: dict[str, dict[str, Any]] = {}
-	for row in test_results:
-		test_id = row.get("test_id")
-		if not test_id:
-			continue
+        # ✅ 2. Fetch all required data
+        cursor.execute("SELECT * FROM diagnostic_tests")
+        diagnostic_tests = fetch_as_dict(cursor)
 
-		existing = latest_result_by_test_id.get(test_id)
-		if existing is None:
-			latest_result_by_test_id[test_id] = row
-			continue
+        cursor.execute(
+            "SELECT * FROM test_results WHERE plan_id = %s",
+            (plan_id,)
+        )
+        test_results = fetch_as_dict(cursor)
 
-		existing_ts = _parse_iso_datetime(existing.get("as_of_date"))
-		candidate_ts = _parse_iso_datetime(row.get("as_of_date"))
-		if candidate_ts and (existing_ts is None or candidate_ts > existing_ts):
-			latest_result_by_test_id[test_id] = row
+        cursor.execute(
+            "SELECT * FROM recommendations WHERE plan_id = %s",
+            (plan_id,)
+        )
+        recommendations = fetch_as_dict(cursor)
 
-	recommendation_by_test_id: dict[str, dict[str, Any]] = {}
-	for recommendation in recommendations:
-		test_id = recommendation.get("test_id")
-		if not test_id:
-			continue
+        cursor.execute(
+            "SELECT * FROM payroll_files WHERE plan_id = %s",
+            (plan_id,)
+        )
+        payroll_files = fetch_as_dict(cursor)
 
-		existing = recommendation_by_test_id.get(test_id)
-		if existing is None or _recommendation_priority(recommendation.get("status")) > _recommendation_priority(existing.get("status")):
-			recommendation_by_test_id[test_id] = recommendation
+        # ✅ 3. Latest test result per test_id
+        latest_by_test = {}
 
-	operations_tests = []
-	for diagnostic_test in diagnostic_tests.values():
-		test_id = diagnostic_test.get("diagnostic_tests_id")
-		test_result = latest_result_by_test_id.get(test_id) if test_id else None
-		recommendation = recommendation_by_test_id.get(test_id) if test_id else None
+        for tr in test_results:
+            test_id = tr.get("test_id")
+            if not test_id:
+                continue
 
-		operations_tests.append(
-			{
-				**diagnostic_test,
-				"status": test_result.get("status") if test_result else None,
-				"currentValue": _format_value(test_result.get("current_value")) if test_result else None,
-				"recommendation": recommendation.get("description") if recommendation else None,
-			}
-		)
+            existing = latest_by_test.get(test_id)
+            if existing is None:
+                latest_by_test[test_id] = tr
+                continue
 
-	payroll_files = get_payroll_files(plan_id)
+            # compare dates
+            existing_date = existing.get("as_of_date")
+            new_date = tr.get("as_of_date")
 
-	return {
-		"operations_tests": operations_tests,
-		"payroll_files": payroll_files,
-	}
+            if new_date and (existing_date is None or new_date > existing_date):
+                latest_by_test[test_id] = tr
 
+        # ✅ 4. Best recommendation per test_id (based on status priority)
+        rec_by_test = {}
 
-@router.get("/usage")
-def get_usage() -> dict[str, Any]:
-	ai_rows = get_ai_interactions()
-	usage_rows = get_usage_events()
+        def get_priority(status):
+            priority_map = {
+                "critical": 3,
+                "high": 2,
+                "medium": 1,
+                "low": 0
+            }
+            return priority_map.get((status or "").lower(), -1)
 
-	ai_interactions = [
-		{
-			"id": row.get("id"),
-			"user_id": row.get("user_id"),
-			"plan_id": row.get("plan_id"),
-			"feature": row.get("feature"),
-			"prompt": row.get("prompt"),
-			"input_tokens": row.get("input_tokens"),
-			"output_tokens": row.get("output_tokens"),
-			"cost_usd": row.get("cost_usd"),
-			"created_at": row.get("created_at"),
-		}
-		for row in ai_rows
-	]
+        for rec in recommendations:
+            test_id = rec.get("test_id")
+            if not test_id:
+                continue
 
-	usage_events = [
-		{
-			"id": row.get("id"),
-			"user_id": row.get("user_id"),
-			"event_type": row.get("event_type"),
-			"page": row.get("page"),
-			"occurred_at": row.get("occurred_at"),
-		}
-		for row in usage_rows
-	]
+            existing = rec_by_test.get(test_id)
 
-	return {
-		"ai_interactions": ai_interactions,
-		"usage_events": usage_events,
-		"analytics": _usage_analytics(ai_rows, usage_rows),
-	}
+            if existing is None or get_priority(rec.get("status")) > get_priority(existing.get("status")):
+                rec_by_test[test_id] = rec
+
+        # ✅ 5. Build operations tests
+        operations_tests = []
+
+        for dt in diagnostic_tests:
+            test_id = dt.get("id")
+
+            tr = latest_by_test.get(test_id)
+            rec = rec_by_test.get(test_id)
+
+            operations_tests.append({
+                **dt,
+                "status": tr.get("status") if tr else None,
+                "currentValue": tr.get("current_value") if tr else None,
+                "recommendation": rec.get("description") if rec else None,
+            })
+
+        return {
+            "operations_tests": operations_tests,
+            "payroll_files": payroll_files,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ==========================================
+#  GET plans/{plan-id}/check-up
+# ==========================================
+
+@router.get("/plans/{plan_id}/check-up")
+def get_plan_checkup(plan_id: str):
+    conn, cursor = None, None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # ✅ 1. Check if plan exists
+        cursor.execute(
+            "SELECT plan_id FROM plans WHERE plan_id = %s",
+            (plan_id,)
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        # ✅ 2. Fetch diagnostic tests
+        cursor.execute("SELECT * FROM diagnostic_tests")
+        diagnostic_tests = fetch_as_dict(cursor)
+        diagnostic_map = {d["id"]: d for d in diagnostic_tests}
+
+        # ✅ 3. Fetch test results
+        cursor.execute(
+            "SELECT * FROM test_results WHERE plan_id = %s",
+            (plan_id,)
+        )
+        test_results = fetch_as_dict(cursor)
+
+        # ✅ 4. Fetch peer benchmarks
+        cursor.execute("SELECT * FROM peer_benchmarks")
+        peer_benchmarks = fetch_as_dict(cursor)
+        peer_map = {
+            p["test_id"]: p for p in peer_benchmarks if p.get("test_id")
+        }
+
+        # ✅ 5. Fetch recommendations
+        cursor.execute(
+            "SELECT * FROM recommendations WHERE plan_id = %s",
+            (plan_id,)
+        )
+        recommendations = fetch_as_dict(cursor)
+        rec_map = {
+            r["test_id"]: r for r in recommendations if r.get("test_id")
+        }
+
+        # ✅ ✅ FIXED: use ai_interactions (not ai_explanations)
+        cursor.execute(
+            "SELECT * FROM ai_interactions WHERE plan_id = %s",
+            (plan_id,)
+        )
+        ai_interactions = fetch_as_dict(cursor)
+
+        # We assume feature maps to test_id
+        ai_map = {
+            a.get("feature"): a for a in ai_interactions if a.get("feature")
+        }
+
+        # ✅ 6. Build response
+        checkup_results = []
+
+        for tr in test_results:
+            test_id = tr.get("test_id")
+            dt = diagnostic_map.get(test_id)
+
+            if not dt:
+                continue
+
+            bm = peer_map.get(test_id)
+            rec = rec_map.get(test_id)
+            ai = ai_map.get(test_id)
+
+            checkup_results.append({
+                # ✅ diagnostic_tests
+                "testId": dt.get("id"),
+                "name": dt.get("name"),
+                "category": dt.get("category"),
+                "status": dt.get("status"),
+                "description": dt.get("description"),
+                "impactScore": dt.get("impact"),
+                "lastRunAt": dt.get("last_run_at"),
+
+                # ✅ test_results
+                "value": tr.get("numeric_value") or tr.get("current_value"),
+                "resultStatus": tr.get("status"),
+
+                # ✅ benchmark
+                "benchmark": dt.get("benchmark"),
+
+                # ✅ peer benchmarks
+                "percentile": bm.get("percentile") if bm else None,
+                "bottomQuartile": bm.get("bottom_quartile") if bm else None,
+                "median": bm.get("median") if bm else None,
+                "topQuartile": bm.get("top_quartile") if bm else None,
+
+                # ✅ recommendations
+                "recommendationTitle": rec.get("title") if rec else None,
+                "recommendation": rec.get("description") if rec else None,
+                "impact": rec.get("impact") if rec else None,
+                "effort": rec.get("effort") if rec else None,
+                "recommendationStatus": rec.get("status") if rec else None,
+
+                # ✅ AI explanation (FIXED)
+                "aiExplanation": ai.get("response") if ai else None,
+            })
+
+        return {"checkup": checkup_results}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()

@@ -1,15 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-
-const API_BASE = "http://127.0.0.1:8000/api";
-
-interface DataSchemaSheet {
-  sheet_name: string;
-  rows: Array<Record<string, unknown>>;
-}
-
-interface DataSchemaResponse {
-  sheets: DataSchemaSheet[];
-}
+import { API_BASE } from "../lib/dataApi";
 
 interface DocumentRow {
   id: string | number;
@@ -40,6 +30,7 @@ export function Documents() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  const [showAll, setShowAll] = useState(false);
 
   const typeOptions = useMemo(() => {
     const types = rows
@@ -53,7 +44,6 @@ export function Documents() {
     return rows.filter((row) => {
       const name = (row.name ?? "").trim().toLowerCase();
       const type = (row.type ?? "").toLowerCase();
-
       const matchesQuery = !q || name.startsWith(q);
       const matchesType = !typeFilter || type === typeFilter.toLowerCase();
       return matchesQuery && matchesType;
@@ -68,35 +58,16 @@ export function Documents() {
       setError(null);
 
       try {
-        const schemaResponse = await fetch(`${API_BASE}/data-schema?offset=0&limit=1000`);
-        if (!schemaResponse.ok) {
-          throw new Error(`Failed to load plans (HTTP ${schemaResponse.status})`);
-        }
-
-        const schema = (await schemaResponse.json()) as DataSchemaResponse;
-        const plansSheet = schema.sheets.find((sheet) => sheet.sheet_name.toLowerCase() === "plans");
-        const planIds = Array.from(
-          new Set(
-            (plansSheet?.rows ?? [])
-              .map((row) => row.plan_id)
-              .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          )
-        );
-
-        if (!cancelled) setPlanCount(planIds.length);
-
-        const payloads = await Promise.all(
-          planIds.map(async (planId) => {
-            const response = await fetch(`${API_BASE}/plans/${encodeURIComponent(planId)}/documents`);
-            if (!response.ok) return null;
-            return (await response.json()) as DocumentsResponse;
-          })
-        );
+        const response = await fetch(`${API_BASE}/documents`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = (await response.json()) as DocumentsResponse;
 
         if (cancelled) return;
 
-        const mergedRows = payloads.flatMap((payload) => payload?.documents ?? []);
-        setRows(mergedRows);
+        const docs = payload.documents ?? [];
+        const uniquePlans = new Set(docs.map((d) => d.planId).filter(Boolean));
+        setPlanCount(uniquePlans.size);
+        setRows(docs);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Failed to load documents.");
@@ -215,7 +186,7 @@ export function Documents() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row, i) => (
+              {(showAll ? filteredRows : filteredRows.slice(0, 10)).map((row, i) => (
                 <tr
                   key={`${row.planId}-${row.id ?? i}`}
                   style={{
@@ -242,6 +213,25 @@ export function Documents() {
             </tbody>
           </table>
         </div>
+      )}
+      {filteredRows.length > 10 && (
+        <button
+          onClick={() => setShowAll((v) => !v)}
+          style={{
+            marginTop: "12px",
+            display: "block",
+            background: "none",
+            border: "1px solid #e2e8f0",
+            borderRadius: "8px",
+            padding: "8px 20px",
+            fontSize: "0.875rem",
+            color: "#475569",
+            cursor: "pointer",
+            width: "100%",
+          }}
+        >
+          {showAll ? "Show less" : `Show ${filteredRows.length - 10} more`}
+        </button>
       )}
     </div>
   );
