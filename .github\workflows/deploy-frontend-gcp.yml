@@ -1,0 +1,66 @@
+name: Deploy Frontend to GCS
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "Frontend/**"
+      - ".github/workflows/deploy-frontend-gcp.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      FRONTEND_BUCKET: ${{ secrets.GCP_FRONTEND_BUCKET }}
+      VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+
+    defaults:
+      run:
+        working-directory: Frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Vite frontend
+        run: npm run build
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure GCS Bucket and Deploy
+        run: |
+          gcloud storage buckets update "gs://$FRONTEND_BUCKET" \
+            --project "$PROJECT_ID" \
+            --web-main-page-suffix=index.html \
+            --web-error-page=index.html || echo "Bucket website config skipped (insufficient bucket admin permissions)."
+          gcloud storage rsync ./dist "gs://$FRONTEND_BUCKET" --project "$PROJECT_ID" --recursive --delete-unmatched-destination-objects
+
+      - name: Ensure index.html has no-cache (SPA updates)
+        run: |
+          gcloud storage objects update "gs://$FRONTEND_BUCKET/index.html" \
+            --project "$PROJECT_ID" \
+            --cache-control="no-cache, no-store, max-age=0"

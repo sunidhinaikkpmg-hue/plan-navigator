@@ -1,0 +1,147 @@
+name: Deploy Backend to Cloud Run
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend-gcp.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || vars.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION || vars.GCP_REGION }}
+      SERVICE_NAME: ${{ secrets.GCP_BACKEND_SERVICE || vars.GCP_BACKEND_SERVICE }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve PROJECT_ID (with fallback)
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GCP_PROJECT_ID_INPUT: ${{ secrets.GCP_PROJECT_ID || vars.GCP_PROJECT_ID }}
+        run: |
+          PROJECT_ID_RESOLVED="$GCP_PROJECT_ID_INPUT"
+          if [ -z "$PROJECT_ID_RESOLVED" ]; then
+            PROJECT_ID_RESOLVED="$(python3 -c 'import json,os; print(json.loads(os.environ.get("GCP_SA_KEY", "{}")).get("project_id", ""))')"
+          fi
+          test -n "$PROJECT_ID_RESOLVED" || (echo "Missing project id: set GCP_PROJECT_ID (secret/var) or include project_id in GCP_SA_KEY" && exit 1)
+          echo "PROJECT_ID=$PROJECT_ID_RESOLVED" >> "$GITHUB_ENV"
+
+      - name: Validate required secrets
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GCP_REGION: ${{ secrets.GCP_REGION || vars.GCP_REGION }}
+          GCP_BACKEND_SERVICE: ${{ secrets.GCP_BACKEND_SERVICE || vars.GCP_BACKEND_SERVICE }}
+        run: |
+          test -n "$GCP_SA_KEY" || (echo "Missing required secret: GCP_SA_KEY" && exit 1)
+          test -n "$PROJECT_ID" || (echo "Missing required secret/var: GCP_PROJECT_ID" && exit 1)
+          test -n "$GCP_REGION" || (echo "Missing required secret/var: GCP_REGION" && exit 1)
+          test -n "$GCP_BACKEND_SERVICE" || (echo "Missing required secret/var: GCP_BACKEND_SERVICE" && exit 1)
+
+      - name: Show config presence (safe)
+        env:
+          GCP_REGION: ${{ secrets.GCP_REGION || vars.GCP_REGION }}
+          GCP_BACKEND_SERVICE: ${{ secrets.GCP_BACKEND_SERVICE || vars.GCP_BACKEND_SERVICE }}
+        run: |
+          [ -n "$PROJECT_ID" ] && echo "GCP_PROJECT_ID: set" || echo "GCP_PROJECT_ID: missing"
+          [ -n "$GCP_REGION" ] && echo "GCP_REGION: set" || echo "GCP_REGION: missing"
+          [ -n "$GCP_BACKEND_SERVICE" ] && echo "GCP_BACKEND_SERVICE: set" || echo "GCP_BACKEND_SERVICE: missing"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy backend to Cloud Run
+        id: deploy_backend
+        continue-on-error: true
+        run: |
+          set +e
+          gcloud run deploy "$SERVICE_NAME" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --source ./backend \
+            --set-build-env-vars 'GOOGLE_ENTRYPOINT=uvicorn app.main:app --host 0.0.0.0 --port 8080' \
+            --set-build-env-vars 'GOOGLE_PYTHON_VERSION=3.13' \
+            --allow-unauthenticated 2>&1 | tee deploy_backend.log
+
+          DEPLOY_EXIT=${PIPESTATUS[0]}
+          BUILD_ID="$(grep -oE 'builds/[a-z0-9-]+' deploy_backend.log | head -n1 | cut -d/ -f2)"
+          [ -n "$BUILD_ID" ] && echo "Detected build ID from deploy output: $BUILD_ID" || echo "Build ID not present in deploy output; using fallback Cloud Build lookup."
+
+          echo "DEPLOY_EXIT=$DEPLOY_EXIT" >> "$GITHUB_ENV"
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+          exit "$DEPLOY_EXIT"
+
+      - name: Show latest Cloud Build logs on failure
+        if: always()
+        run: |
+          echo "Latest Cloud Builds (most recent first):"
+          set +e
+          gcloud builds list \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --limit=3 \
+            --sort-by=~createTime \
+            --format='table(id,status,createTime,logUrl)'
+          BUILDS_LIST_EXIT=$?
+
+          if [ "$BUILDS_LIST_EXIT" -ne 0 ]; then
+            echo "Could not list Cloud Builds. Ensure deploy service account has roles/cloudbuild.builds.viewer (or higher)."
+          fi
+
+          if [ -n "$BUILD_ID" ]; then
+            echo "Fetching logs for detected build: $BUILD_ID"
+            gcloud builds log "$BUILD_ID" --project "$PROJECT_ID" --region "$REGION"
+            BUILD_LOG_EXIT=$?
+            if [ "$BUILD_LOG_EXIT" -ne 0 ]; then
+              echo "Could not fetch logs for build $BUILD_ID. Ensure roles/cloudbuild.builds.viewer is granted."
+            fi
+          else
+            echo "No build ID detected from deploy output; attempting fallback lookup."
+            BUILD_ID_FALLBACK="$(gcloud builds list --project "$PROJECT_ID" --region "$REGION" --limit=1 --sort-by=~createTime --format='value(id)')"
+            if [ -n "$BUILD_ID_FALLBACK" ]; then
+              echo "Fetching logs for fallback build: $BUILD_ID_FALLBACK"
+              gcloud builds log "$BUILD_ID_FALLBACK" --project "$PROJECT_ID" --region "$REGION"
+            else
+              echo "No recent Cloud Build ID found via regional fallback lookup."
+            fi
+          fi
+
+          echo "Recent Cloud Run revisions (for extra context):"
+          gcloud run revisions list \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --limit=5 \
+            --format='table(metadata.name,status.conditions[0].status,status.conditions[0].message)'
+
+          LATEST_REVISION="$(gcloud run revisions list --project "$PROJECT_ID" --region "$REGION" --limit=1 --sort-by=~metadata.creationTimestamp --format='value(metadata.name)')"
+          if [ -n "$LATEST_REVISION" ]; then
+            echo "Recent Cloud Run logs for revision: $LATEST_REVISION"
+            gcloud logging read \
+              --project "$PROJECT_ID" \
+              --limit=50 \
+              --order=desc \
+              "resource.type=cloud_run_revision AND resource.labels.service_name=$SERVICE_NAME AND resource.labels.revision_name=$LATEST_REVISION" \
+              --format='value(timestamp,textPayload,jsonPayload.message,severity)' || true
+          else
+            echo "No Cloud Run revision name found for log lookup."
+          fi
+
+      - name: Fail workflow if deploy failed
+        if: steps.deploy_backend.outcome != 'success'
+        run: |
+          echo "Cloud Run deploy failed. See Cloud Build logs above for root cause."
+          exit 1
