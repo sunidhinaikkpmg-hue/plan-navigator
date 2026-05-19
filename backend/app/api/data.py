@@ -11,12 +11,15 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # ✅ DB connection
 def get_connection():
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return psycopg2.connect(database_url)
     return psycopg2.connect(
-        host="127.0.0.1",
-        port=5432,
-        user="postgres",
+        host=os.getenv("DB_HOST", "127.0.0.1"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        user=os.getenv("DB_USER", "postgres"),
         password=os.getenv("DB_PASSWORD"),
-        dbname="postgres",
+        dbname=os.getenv("DB_NAME", "postgres"),
     )
 
 
