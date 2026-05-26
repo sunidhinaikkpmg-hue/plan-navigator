@@ -358,13 +358,18 @@ export function DataSchema() {
   );
 
   return (
-    <section className="page-shell" style={{ display: "grid", gap: "1rem" }}>
-      <div>
+    <section className="page-shell" style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", padding: 0 }}>
+
+      {/* STICKY HEADER */}
+      <div style={{ flexShrink: 0, padding: "2rem 2rem 1rem" }}>
         <h1 style={{ marginBottom: "0.5rem" }}>Data Schema</h1>
         <p style={{ margin: 0 }}>
           Hardcoded reference for tables and columns. {totalTables} tables, {totalColumns} columns across {schema.length} domains.
         </p>
       </div>
+
+      {/* SCROLLABLE BODY */}
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "0 2rem 2rem", display: "grid", gap: "1rem", alignContent: "start" }}>
 
       {schema.map((domain) => (
         <section key={domain.domain} style={{ display: "grid", gap: "0.75rem" }}>
@@ -413,6 +418,7 @@ export function DataSchema() {
           ))}
         </section>
       ))}
+      </div>{/* end scrollable body */}
     </section>
   );
 }

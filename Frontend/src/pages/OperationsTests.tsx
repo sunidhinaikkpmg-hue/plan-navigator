@@ -72,6 +72,9 @@ const payrollStatusStyle = (status: string | null) => {
 
 function OperationCard({ test }: { test: OperationTest }) {
   const cfg = getCfg(test.status);
+  const s = (test.status ?? "").toLowerCase();
+  const percentile = s === "fail" ? 18 : s === "warn" ? 45 : 75;
+  const pctlLabel  = s === "fail" ? "18th pctl" : s === "warn" ? "45th pctl" : "75th pctl";
 
   return (
     <div
@@ -120,6 +123,23 @@ function OperationCard({ test }: { test: OperationTest }) {
         )}
       </div>
 
+      {/* Progress Bar */}
+      <div style={{ fontSize: 12, color: "#64748b", overflow: "hidden", marginTop: 2 }}>
+        <span style={{ float: "left" }}>vs peers</span>
+        <span style={{ float: "right" }}>{pctlLabel}</span>
+        <div style={{ height: 6, background: "#e5e7eb", borderRadius: 4, marginTop: 6, clear: "both" }}>
+          <div
+            style={{
+              width: `${percentile}%`,
+              height: "100%",
+              borderRadius: 4,
+              background: "linear-gradient(to right, #ef4444, #f59e0b, #22c55e)",
+              transition: "width 0.4s ease",
+            }}
+          />
+        </div>
+      </div>
+
       {/* Recommendation */}
       {test.recommendation && (
         <div style={{ fontSize: "0.75rem", color: "#475569", lineHeight: 1.4 }}>{test.recommendation}</div>
@@ -152,10 +172,13 @@ export function OperationsTests() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
 
-  const [showAllAttention, setShowAllAttention] = useState(false);
-  const [showAllPassing, setShowAllPassing]     = useState(false);
-  const [showAllPayroll, setShowAllPayroll]     = useState(false);
-
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    fail: true,
+    warn: true,
+    pass: false,
+  });
+  const toggleSection = (key: string) =>
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [detailData, setDetailData]         = useState<{ operations_tests: OperationTest[]; payroll_files: PayrollFile[] } | null>(null);
   const [detailLoading, setDetailLoading]   = useState(false);
@@ -216,12 +239,16 @@ export function OperationsTests() {
   const scorePercent  = total ? Math.round((pass / total) * 100) : 0;
   const progressColor = scorePercent >= 75 ? "#22c55e" : scorePercent >= 50 ? "#f59e0b" : "#ef4444";
 
-  const needsAttention = tests.filter((t) => (t.status ?? "").toLowerCase() !== "pass");
-  const passing        = tests.filter((t) => (t.status ?? "").toLowerCase() === "pass");
+  const failTests = tests.filter((t) => (t.status ?? "").toLowerCase() === "fail");
+  const warnTests = tests.filter((t) => (t.status ?? "").toLowerCase() === "warn");
+  const passTests = tests.filter((t) => (t.status ?? "").toLowerCase() === "pass");
 
   return (
     <>
-      <div style={{ padding: "2rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <div style={{ height: "110vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+
+        {/* STICKY HEADER + SUMMARY */}
+        <div style={{ flexShrink: 0, padding: "2rem 2rem 1rem" }}>
 
         {/* ===== HEADER ===== */}
         <div>
@@ -277,70 +304,73 @@ export function OperationsTests() {
             </div>
           </div>
         )}
+        </div>{/* end sticky header */}
 
-        {/* ===== NEEDS ATTENTION ===== */}
-        {needsAttention.length > 0 && (
-          <div>
-            <h2 style={{ fontSize: "1rem", fontWeight: 600, margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ color: "#f59e0b" }}>⚠</span> Needs Attention
-            </h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
-              {(showAllAttention ? needsAttention : needsAttention.slice(0, 6)).map((t, i) => (
-                <OperationCard key={`${t.planId}-${t.id}-${i}`} test={t} />
-              ))}
-            </div>
-            {needsAttention.length > 6 && (
-              <button
-                onClick={() => setShowAllAttention((v) => !v)}
-                style={{
-                  marginTop: "10px",
-                  display: "block",
-                  background: "none",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "8px",
-                  padding: "8px 20px",
-                  fontSize: "0.875rem",
-                  color: "#475569",
-                  cursor: "pointer",
-                  width: "100%",
-                }}
-              >
-                {showAllAttention ? "Show less" : `Show ${needsAttention.length - 6} more`}
-              </button>
-            )}
-          </div>
-        )}
+        {/* SCROLLABLE BODY */}
+        <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "0 2rem 2rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
 
-        {/* ===== PASSING ===== */}
-        {passing.length > 0 && (
-          <div>
-            <h2 style={{ fontSize: "1rem", fontWeight: 600, margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ color: "#22c55e" }}>✓</span> Passing
-            </h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
-              {(showAllPassing ? passing : passing.slice(0, 6)).map((t, i) => (
-                <OperationCard key={`${t.planId}-${t.id}-${i}`} test={t} />
-              ))}
-            </div>
-            {passing.length > 6 && (
-              <button
-                onClick={() => setShowAllPassing((v) => !v)}
-                style={{
-                  marginTop: "10px",
-                  display: "block",
-                  background: "none",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "8px",
-                  padding: "8px 20px",
-                  fontSize: "0.875rem",
-                  color: "#475569",
-                  cursor: "pointer",
-                  width: "100%",
-                }}
-              >
-                {showAllPassing ? "Show less" : `Show ${passing.length - 6} more`}
-              </button>
-            )}
+        {/* ===== COLLAPSIBLE SECTIONS ===== */}
+        {total > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {([
+              { key: "fail", label: "Action Required", bgTint: "#fef2f2", badgeBg: "#fee2e2", borderAccent: "#fca5a5", dotColor: "#dc2626", sectionTests: failTests },
+              { key: "warn", label: "Needs Attention",  bgTint: "#fffbeb", badgeBg: "#fef3c7", borderAccent: "#fcd34d", dotColor: "#f59e0b", sectionTests: warnTests },
+              { key: "pass", label: "Passing",          bgTint: "#f0fdf4", badgeBg: "#dcfce7", borderAccent: "#86efac", dotColor: "#16a34a", sectionTests: passTests },
+            ]).map(({ key, label, bgTint, badgeBg, borderAccent, dotColor, sectionTests }) => {
+              const isOpen = openSections[key];
+              return (
+                <div
+                  key={key}
+                  style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}
+                >
+                  <button
+                    onClick={() => toggleSection(key)}
+                    style={{
+                      width: "100%",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "14px 20px",
+                      background: isOpen ? bgTint : "#fff",
+                      border: "none",
+                      borderBottom: isOpen && sectionTests.length > 0 ? `1px solid ${borderAccent}` : "none",
+                      cursor: "pointer",
+                      transition: "background 0.15s",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span
+                        style={{
+                          width: 10, height: 10, borderRadius: "50%",
+                          background: dotColor, display: "inline-block",
+                          boxShadow: `0 0 0 3px ${badgeBg}`,
+                        }}
+                      />
+                      <span style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>{label}</span>
+                      <span style={{ background: badgeBg, color: dotColor, borderRadius: 999, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>
+                        {sectionTests.length}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", letterSpacing: "0.05em", background: "#f3f4f6", borderRadius: 6, padding: "3px 10px" }}>
+                      {isOpen ? "▲ HIDE" : "▼ SHOW"}
+                    </span>
+                  </button>
+
+                  {isOpen && sectionTests.length === 0 && (
+                    <div style={{ padding: "16px 20px", color: "#9ca3af", fontSize: 13 }}>No items in this category.</div>
+                  )}
+                  {isOpen && sectionTests.length > 0 && (
+                    <div style={{ padding: "16px 20px", background: "#fff" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
+                        {sectionTests.map((t, i) => (
+                          <OperationCard key={`${t.planId}-${t.id}-${i}`} test={t} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -365,10 +395,10 @@ export function OperationsTests() {
           {rows.length === 0 ? (
             <div style={{ padding: "1.5rem", color: "#6b7280" }}>No payroll files found.</div>
           ) : (
-            <div style={{ overflowX: "auto" }}>
+            <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "340px" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
                 <thead>
-                  <tr style={{ background: "#f9fafb" }}>
+                  <tr style={{ background: "#f9fafb", position: "sticky", top: 0, zIndex: 1 }}>
                     {PAYROLL_COLUMNS.map((col) => (
                       <th
                         key={col.key}
@@ -387,7 +417,7 @@ export function OperationsTests() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(showAllPayroll ? rows : rows.slice(0, 8)).map((row, i) => (
+                  {rows.map((row, i) => (
                     <tr
                       key={row.id ?? i}
                       onClick={() => setSelectedPlanId(row.plan_id)}
@@ -420,29 +450,11 @@ export function OperationsTests() {
               </table>
             </div>
           )}
-          {rows.length > 8 && (
-            <div style={{ padding: "12px 20px", borderTop: "1px solid #f1f5f9" }}>
-              <button
-                onClick={() => setShowAllPayroll((v) => !v)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  background: "none",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: "8px",
-                  padding: "8px 20px",
-                  fontSize: "0.875rem",
-                  color: "#475569",
-                  cursor: "pointer",
-                }}
-              >
-                {showAllPayroll ? "Show less" : `Show ${rows.length - 8} more`}
-              </button>
-            </div>
-          )}
+
         </div>
 
-      </div>
+        </div>{/* end scrollable body */}
+      </div>{/* end outer wrapper */}
 
       {/* ===== DRAWER ===== */}
       <DetailDrawer

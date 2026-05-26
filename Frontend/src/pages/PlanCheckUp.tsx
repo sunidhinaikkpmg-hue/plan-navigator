@@ -32,8 +32,15 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
 export function PlanCheckUp() {
   const [items, setItems] = useState<CheckupCard[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    fail: true,
+    warn: false,
+    pass: false,
+  });
   const [loading, setLoading] = useState(true);
+
+  const toggleSection = (key: string) =>
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
 
   useEffect(() => {
     fetch(`${API_BASE}/check-up`)
@@ -65,198 +72,326 @@ export function PlanCheckUp() {
   const total = items.length || 1;
   const healthScore = Math.round((summary.pass / total) * 100);
 
+  const STATUS_ORDER: Record<string, number> = { fail: 0, warn: 1, pass: 2 };
+  const IMPACT_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+  const sortedItems = [...items].sort((a, b) => {
+    const statusA = STATUS_ORDER[a.resultStatus?.toLowerCase() ?? ""] ?? 99;
+    const statusB = STATUS_ORDER[b.resultStatus?.toLowerCase() ?? ""] ?? 99;
+    if (statusA !== statusB) return statusA - statusB;
+    const impactA = IMPACT_ORDER[a.impact?.toLowerCase() ?? ""] ?? 99;
+    const impactB = IMPACT_ORDER[b.impact?.toLowerCase() ?? ""] ?? 99;
+    return impactA - impactB;
+  });
+
   if (loading) return <div style={{ padding: 24 }}>Loading...</div>;
 
+  const SECTIONS: { key: string; label: string; items: CheckupCard[] }[] = [
+    {
+      key: "fail",
+      label: "Action Required",
+      items: sortedItems.filter((i) => i.resultStatus?.toLowerCase() === "fail"),
+    },
+    {
+      key: "warn",
+      label: "Needs Attention",
+      items: sortedItems.filter((i) => i.resultStatus?.toLowerCase() === "warn"),
+    },
+    {
+      key: "pass",
+      label: "Passing",
+      items: sortedItems.filter((i) => i.resultStatus?.toLowerCase() === "pass"),
+    },
+  ];
+
+  const renderItems = (sectionItems: CheckupCard[]) =>
+    sectionItems.map((item, index) => {
+      const status = STATUS_META[item.resultStatus?.toLowerCase() || "fail"];
+      const isOpen = expanded === item.testId;
+      return (
+        <div
+          key={item.testId}
+          style={{
+            borderBottom: "1px solid #f3f4f6",
+            background: isOpen ? "#fafafa" : "#fff",
+          }}
+        >
+          <div
+            onClick={() => setExpanded(isOpen ? null : item.testId)}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "14px 20px",
+              cursor: "pointer",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <span style={{ color: "#d1d5db", fontSize: 12, fontWeight: 700, minWidth: 24, textAlign: "right" }}>
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: status.color,
+                  flexShrink: 0,
+                }}
+              />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: "#111827" }}>{item.name}</div>
+                <div style={{ color: "#9ca3af", fontSize: 12, marginTop: 2 }}>
+                  {typeof item.value === "number"
+                    ? `${(item.value * 100).toFixed(2)}%`
+                    : item.value}{" "}
+                  · benchmark {item.benchmark || "—"}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span
+                style={{
+                  fontWeight: 700,
+                  fontSize: 15,
+                  color: status.color,
+                }}
+              >
+                {typeof item.value === "number"
+                  ? `${(item.value * 100).toFixed(2)}%`
+                  : item.value}
+              </span>
+              <span style={{ color: "#d1d5db", fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+            </div>
+          </div>
+
+          {isOpen && (
+            <div
+              style={{
+                background: "#f9fafb",
+                borderTop: "1px solid #f3f4f6",
+                padding: "16px 20px 16px 62px",
+                fontSize: 13,
+              }}
+            >
+              {item.recommendationTitle && (
+                <div style={{ fontWeight: 700, fontSize: 14, color: "#111827", marginBottom: 6 }}>
+                  {item.recommendationTitle}
+                </div>
+              )}
+              {item.recommendation && (
+                <p style={{ color: "#374151", marginBottom: 10, lineHeight: 1.6 }}>{item.recommendation}</p>
+              )}
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: item.aiExplanation ? 10 : 0 }}>
+                {item.impact && (
+                  <span style={{ fontSize: 12, background: "#f3f4f6", borderRadius: 6, padding: "3px 10px", color: "#6b7280" }}>
+                    Impact: <strong style={{ color: "#374151" }}>{item.impact}</strong>
+                  </span>
+                )}
+                {item.effort && (
+                  <span style={{ fontSize: 12, background: "#f3f4f6", borderRadius: 6, padding: "3px 10px", color: "#6b7280" }}>
+                    Effort: <strong style={{ color: "#374151" }}>{item.effort}</strong>
+                  </span>
+                )}
+              </div>
+              {item.aiExplanation && (
+                <p style={{ color: "#6b7280", fontSize: 13, lineHeight: 1.6, marginTop: 8, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
+                  {item.aiExplanation}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    });
+
   return (
-    <div style={{ padding: "2rem", maxWidth: 900, margin: "0 auto" }}>
-      
-      {/* ✅ TOP SUMMARY SECTION */}
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: "inherit" }}>
+
+      {/* STICKY HEADER + SUMMARY */}
+      <div style={{ flexShrink: 0, padding: "2rem 2rem 1.25rem" }}>
+
+      {/* HEADER */}
       <div style={{ marginBottom: "2rem" }}>
-        <p style={{ fontSize: 12, letterSpacing: "0.08em", color: "#6b7280" }}>
+        <p style={{ fontSize: 11, letterSpacing: "0.12em", color: "#9ca3af", fontWeight: 600, marginBottom: 6 }}>
           PLAN CHECK-UP
         </p>
-
-        <h1 style={{ fontSize: 32, fontWeight: 600 }}>
+        <h1 style={{ fontSize: 30, fontWeight: 700, color: "#111827", margin: 0 }}>
           Your plan, at a glance.
         </h1>
+      </div>
 
+      {/* SUMMARY CARD */}
+      <div
+        style={{
+          display: "flex",
+          gap: "1.5rem",
+          background: "#fff",
+          border: "1px solid #e5e7eb",
+          borderRadius: 16,
+          padding: "1.5rem 2rem",
+          marginBottom: "2rem",
+          alignItems: "center",
+          boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
+        }}
+      >
+        {/* SCORE */}
         <div
           style={{
             display: "flex",
-            gap: "2rem",
-            borderTop: "1px solid #e5e7eb",
-            borderBottom: "1px solid #e5e7eb",
-            padding: "2rem 0",
-            marginTop: "1rem",
+            flexDirection: "column",
             alignItems: "center",
+            justifyContent: "center",
+            minWidth: 100,
+            padding: "0.5rem 1.5rem",
           }}
         >
-          {/* LEFT: HEALTH SCORE */}
-          <div>
-            <div style={{ fontSize: 64, fontWeight: 700 }}>
-              {healthScore}
-              <span style={{ fontSize: 24 }}>%</span>
-            </div>
-            <p style={{ fontSize: 12, color: "#6b7280" }}>
-              HEALTH SCORE
-            </p>
+          <div
+            style={{
+              fontSize: 48,
+              fontWeight: 800,
+              lineHeight: 1,
+              color: "#111827",
+            }}
+          >
+            {healthScore}
+            <span style={{ fontSize: 20, fontWeight: 600 }}>%</span>
           </div>
+          <p style={{ fontSize: 10, letterSpacing: "0.1em", color: "#6b7280", fontWeight: 600, marginTop: 4 }}>
+            HEALTH SCORE
+          </p>
+        </div>
 
-          {/* RIGHT: COUNTS */}
-          <div>
-            <p style={{ marginBottom: 10 }}>
-              {summary.fail} tests are failing and {summary.warn} need attention.
-              Focus on the prioritized actions below.
-            </p>
+        {/* DIVIDER */}
+        <div style={{ width: 1, height: 60, background: "#e5e7eb" }} />
 
-            <div style={{ display: "flex", gap: 20 }}>
-              <span style={{ color: "#dc2626" }}>
-                ● {summary.fail} failing
-              </span>
-              <span style={{ color: "#f59e0b" }}>
-                ● {summary.warn} to review
-              </span>
-              <span style={{ color: "#6b7280" }}>
-                ● {summary.pass} healthy
-              </span>
-            </div>
+        {/* COUNTS */}
+        <div style={{ flex: 1 }}>
+          <p style={{ color: "#374151", fontSize: 14, marginBottom: 12, lineHeight: 1.5 }}>
+            {summary.fail > 0
+              ? <><strong>{summary.fail} test{summary.fail !== 1 ? "s" : ""}</strong> require action and <strong>{summary.warn}</strong> need attention.</>
+              : summary.warn > 0
+              ? <><strong>{summary.warn} test{summary.warn !== 1 ? "s" : ""}</strong> need attention.</>
+              : <><strong>All tests passing.</strong> Your plan looks great!</>
+            }
+          </p>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#dc2626", background: "#fee2e2", borderRadius: 999, padding: "3px 12px", fontWeight: 600 }}>
+              ● {summary.fail} failing
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#d97706", background: "#fef3c7", borderRadius: 999, padding: "3px 12px", fontWeight: 600 }}>
+              ● {summary.warn} to review
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#16a34a", background: "#dcfce7", borderRadius: 999, padding: "3px 12px", fontWeight: 600 }}>
+              ● {summary.pass} healthy
+            </span>
           </div>
         </div>
+      </div>{/* end SUMMARY CARD */}
+      </div>{/* end sticky header */}
+
+      {/* SCROLLABLE BODY */}
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "0 2rem 2rem" }}>
+
+      {/* CATEGORY SECTIONS */}
+      <div style={{ marginBottom: "0.75rem" }}>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827", margin: "0 0 2px" }}>
+          Your Priority Actions
+        </h2>
+        <p style={{ fontSize: 12, color: "#9ca3af", margin: 0 }}>
+          Ordered by severity and impact · start at top
+        </p>
       </div>
-
-      {/* ✅ PRIORITY LIST */}
-      <h2 style={{ fontSize: 22, fontWeight: 600 }}>Your priority actions</h2>
-
-      <div
-        style={{
-          marginTop: 16,
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          overflow: "hidden",
-        }}
-      >
-        {(showAll ? items : items.slice(0, 6)).map((item, index) => {
-          const status =
-            STATUS_META[item.resultStatus?.toLowerCase() || "fail"];
-
-          const isOpen = expanded === item.testId;
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        {SECTIONS.map(({ key, label, items: sectionItems }) => {
+          const meta = STATUS_META[key];
+          const isOpen = openSections[key];
+          const bgTint = key === "fail" ? "#fef2f2" : key === "warn" ? "#fffbeb" : "#f0fdf4";
+          const badgeBg = key === "fail" ? "#fee2e2" : key === "warn" ? "#fef3c7" : "#dcfce7";
+          const borderAccent = key === "fail" ? "#fca5a5" : key === "warn" ? "#fcd34d" : "#86efac";
 
           return (
-            <div key={item.testId} style={{ borderBottom: "1px solid #e5e7eb" }}>
-              
-              {/* ✅ ROW */}
-              <div
-                onClick={() =>
-                  setExpanded(isOpen ? null : item.testId)
-                }
+            <div
+              key={key}
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 14,
+                overflow: "hidden",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+              }}
+            >
+              {/* SECTION HEADER */}
+              <button
+                onClick={() => toggleSection(key)}
                 style={{
+                  width: "100%",
                   display: "flex",
                   justifyContent: "space-between",
-                  padding: "16px",
+                  alignItems: "center",
+                  padding: "14px 20px",
+                  background: isOpen ? bgTint : "#fff",
+                  border: "none",
+                  borderBottom: isOpen && sectionItems.length > 0 ? `1px solid ${borderAccent}` : "none",
                   cursor: "pointer",
+                  transition: "background 0.15s",
                 }}
               >
-                {/* LEFT */}
-                <div style={{ display: "flex", gap: 12 }}>
-                  <span style={{ color: "#9ca3af", width: 30 }}>
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span
                     style={{
-                      width: 8,
-                      height: 8,
+                      width: 10,
+                      height: 10,
                       borderRadius: "50%",
-                      background: status.color,
-                      marginTop: 6,
+                      background: meta.color,
+                      display: "inline-block",
+                      boxShadow: `0 0 0 3px ${badgeBg}`,
                     }}
                   />
-
-                  <div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <span style={{ fontWeight: 600 }}>
-                        {item.name}
-                      </span>
-                      <span style={{ color: status.color, fontSize: 13 }}>
-                        {status.label}
-                      </span>
-                    </div>
-
-                    {/* ✅ VALUE + BENCHMARK FIX */}
-                    <div style={{ color: "#6b7280", fontSize: 13 }}>
-                      {typeof item.value === "number"
-                        ? `${(item.value * 100).toFixed(2)}%`
-                        : item.value}{" "}
-                      vs benchmark {item.benchmark || "—"}
-                    </div>
-                  </div>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>{label}</span>
+                  <span
+                    style={{
+                      background: badgeBg,
+                      color: meta.color,
+                      borderRadius: 999,
+                      padding: "2px 10px",
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {sectionItems.length}
+                  </span>
                 </div>
-
-                {/* RIGHT VALUE */}
-                <div style={{ fontWeight: 600, fontSize: 18 }}>
-                  {typeof item.value === "number"
-                    ? `${(item.value * 100).toFixed(2)}%`
-                    : item.value}
-                </div>
-              </div>
-
-              {/* ✅ EXPANDED DETAILS */}
-              {isOpen && (
-                <div
+                <span
                   style={{
-                    background: "#f9fafb",
-                    padding: "16px 24px",
-                    fontSize: 14,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: "#6b7280",
+                    letterSpacing: "0.05em",
+                    background: "#f3f4f6",
+                    borderRadius: 6,
+                    padding: "3px 10px",
                   }}
                 >
-                  {item.recommendationTitle && (
-                    <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                      {item.recommendationTitle}
-                    </div>
-                  )}
+                  {isOpen ? "▲ HIDE" : "▼ SHOW"}
+                </span>
+              </button>
 
-                  {item.recommendation && (
-                    <p style={{ marginBottom: 10 }}>
-                      {item.recommendation}
-                    </p>
-                  )}
-
-                  <div style={{ color: "#6b7280", fontSize: 13 }}>
-                    {item.impact && <span>Impact: {item.impact}</span>}
-                    {item.impact && item.effort && <span> · </span>}
-                    {item.effort && <span>Effort: {item.effort}</span>}
-                  </div>
-
-                  {item.aiExplanation && (
-                    <p style={{ marginTop: 10 }}>
-                      {item.aiExplanation}
-                    </p>
-                  )}
+              {/* ITEMS */}
+              {isOpen && sectionItems.length === 0 && (
+                <div style={{ padding: "16px 20px", color: "#9ca3af", fontSize: 13 }}>
+                  No items in this category.
+                </div>
+              )}
+              {isOpen && sectionItems.length > 0 && (
+                <div style={{ background: "#fff" }}>
+                  {renderItems(sectionItems)}
                 </div>
               )}
             </div>
           );
         })}
       </div>
-      {items.length > 6 && (
-        <button
-          onClick={() => setShowAll((v) => !v)}
-          style={{
-            marginTop: "12px",
-            display: "block",
-            background: "none",
-            border: "1px solid #e2e8f0",
-            borderRadius: "8px",
-            padding: "8px 20px",
-            fontSize: "0.875rem",
-            color: "#475569",
-            cursor: "pointer",
-            width: "100%",
-          }}
-        >
-          {showAll ? "Show less" : `Show ${items.length - 6} more`}
-        </button>
-      )}
+      </div>{/* end scrollable body */}
     </div>
   );
 }

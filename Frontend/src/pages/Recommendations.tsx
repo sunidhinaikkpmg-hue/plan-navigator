@@ -68,7 +68,18 @@ export function Recommendations() {
 
   const categories = Array.from(new Set(cards.map((c) => c.category).filter(Boolean))).sort();
   const filtered = filter === "all" ? cards : cards.filter((c) => c.category === filter);
-  const visible  = showAll ? filtered : filtered.slice(0, 6);
+  const IMPACT_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  const EFFORT_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+  const sorted = [...filtered].sort((a, b) => {
+    const ia = IMPACT_RANK[(a.impact ?? "").toLowerCase()] ?? 3;
+    const ib = IMPACT_RANK[(b.impact ?? "").toLowerCase()] ?? 3;
+    if (ia !== ib) return ia - ib;
+    const ea = EFFORT_RANK[(a.effort ?? "").toLowerCase()] ?? 3;
+    const eb = EFFORT_RANK[(b.effort ?? "").toLowerCase()] ?? 3;
+    return ea - eb;
+  });
+  const visible  = showAll ? sorted : sorted.slice(0, 6);
 
   const impactStyle = (impact: string) => {
     const s = (impact ?? "").toLowerCase();
@@ -103,15 +114,18 @@ export function Recommendations() {
   });
 
   return (
-    <div style={{ padding: "2rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-      {/* HEADER */}
-      <div>
+      {/* STICKY HEADER */}
+      <div style={{ flexShrink: 0, padding: "2rem 2rem 1rem" }}>
         <h1 style={{ fontSize: "1.5rem", fontWeight: 700, margin: 0 }}>Recommendations</h1>
         <p style={{ fontSize: "0.875rem", color: "#6b7280", margin: "4px 0 0" }}>
           Prioritized action items ranked by impact and effort
         </p>
       </div>
+
+      {/* SCROLLABLE BODY */}
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "0 2rem 2rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
 
       {loading && <div style={{ color: "#6b7280" }}>Loading recommendations...</div>}
 
@@ -264,6 +278,7 @@ export function Recommendations() {
           )}
         </>
       )}
+      </div>
     </div>
   );
 }

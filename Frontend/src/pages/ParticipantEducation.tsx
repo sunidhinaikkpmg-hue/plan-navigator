@@ -89,13 +89,20 @@ export function ParticipantEducation() {
   }
 
   return (
-    <div style={{ padding: "2rem" }}>
-      <h2 style={{ fontSize: "1.25rem", fontWeight: 600, marginBottom: "0.5rem" }}>
-        Participant Education Campaigns
-      </h2>
-      <p style={{ fontSize: "0.875rem", color: "#6b7280", marginBottom: "1.25rem" }}>
-        Plans scanned: <strong>{planCount}</strong> - {rows.length} record{rows.length !== 1 ? "s" : ""}
-      </p>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+
+      {/* STICKY HEADER */}
+      <div style={{ flexShrink: 0, padding: "2rem 2rem 1rem" }}>
+        <h2 style={{ fontSize: "1.25rem", fontWeight: 600, marginBottom: "0.5rem" }}>
+          Participant Education Campaigns
+        </h2>
+        <p style={{ fontSize: "0.875rem", color: "#6b7280", marginBottom: 0 }}>
+          Plans scanned: <strong>{planCount}</strong> - {rows.length} record{rows.length !== 1 ? "s" : ""}
+        </p>
+      </div>
+
+      {/* SCROLLABLE BODY */}
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "0 2rem 2rem" }}>
 
       {rows.length === 0 ? (
         <p style={{ color: "#6b7280" }}>No campaigns found.</p>
@@ -173,6 +180,7 @@ export function ParticipantEducation() {
           {showAll ? "Show less" : `Show ${rows.length - 8} more`}
         </button>
       )}
+      </div>{/* end scrollable body */}
     </div>
   );
 }

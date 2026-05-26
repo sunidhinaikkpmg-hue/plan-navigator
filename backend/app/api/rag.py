@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
-
+from typing import Any, Dict, AsyncGenerator
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+import asyncio
+import json
 
 # Router for inclusion in main.py
 router = APIRouter()
@@ -97,11 +99,108 @@ def get_rag_answer(question: str) -> dict[str, Any]:
 
 
 @router.post("/query")
-async def query_rag(request: RagQueryRequest) -> dict[str, Any]:
+async def query_rag(request: RagQueryRequest) -> StreamingResponse:
     """API endpoint to answer questions grounded in the RAG corpus."""
     try:
-        return get_rag_answer(request.question)
+        return stream_endpoint(request.question)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+async def stream_rag_answer(rag_query: str) -> AsyncGenerator[Dict[str, Any], None]:
+    """Streaming RAG response generator.
+
+    Uses the same sync generate_content(..., stream=True) iterator as chunk_test.py,
+    but bridges it to async via a queue so the event loop stays unblocked.
+    """
+    model = _get_model()
+
+    formatted_query = (
+        "Answer strictly from the retrieved nodes. If not found, reply exactly: Document not found.\n\n"
+        f"Question: {rag_query}"
+    )
+
+    full_answer = ""
+    sources: list[dict[str, str]] = []
+    input_tokens = 0
+    output_tokens = 0
+
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    # Run the sync streaming iterator in a thread pool, pushing each chunk
+    # into the queue so we can await them here without blocking.
+    def _produce():
+        try:
+            for chunk in model.generate_content(formatted_query, stream=True):
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+    loop.run_in_executor(None, _produce)
+
+    while True:
+        chunk = await queue.get()
+        if chunk is None:
+            break
+
+        # Extract text (mirrors chunk_test.py's try/except pattern)
+        try:
+            chunk_text = chunk.text
+        except (ValueError, AttributeError):
+            chunk_text = ""
+
+        if chunk_text:
+            full_answer += chunk_text
+            yield {"type": "chunk", "data": chunk_text}
+            await asyncio.sleep(0)  # yield control to flush the response
+
+        # Grounding sources (arrive in some chunks, often the last one)
+        if chunk.candidates:
+            candidate = chunk.candidates[0]
+            metadata = getattr(candidate, "grounding_metadata", None)
+            if metadata:
+                for gc in getattr(metadata, "grounding_chunks", []):
+                    retrieved_context = getattr(gc, "retrieved_context", None)
+                    if retrieved_context:
+                        source_info = {
+                            "title": getattr(retrieved_context, "title", "Unknown Document"),
+                            "uri": getattr(retrieved_context, "uri", ""),
+                        }
+                        if source_info not in sources:
+                            sources.append(source_info)
+
+        # Token usage (arrives in the final chunk)
+        usage = getattr(chunk, "usage_metadata", None)
+        if usage:
+            input_tokens = getattr(usage, "prompt_token_count", input_tokens)
+            output_tokens = getattr(usage, "candidates_token_count", output_tokens)
+
+    yield {
+        "type": "final",
+        "answer": full_answer,
+        "sources": sources,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+### 
+def stream_endpoint(query: str) -> StreamingResponse:
+    async def event_stream():
+        async for chunk in stream_rag_answer(query):
+            # ✅ SSE format (CRITICAL)
+            yield f"data: {json.dumps(chunk)}\n\n"
+           
+            # ✅ tiny await forces flush (VERY IMPORTANT)
+            await asyncio.sleep(0)
+ 
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disables nginx buffering
+        },
+    )
